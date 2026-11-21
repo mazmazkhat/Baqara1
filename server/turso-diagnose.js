@@ -24,6 +24,8 @@ export async function diagnoseTurso(url, token) {
   try {
     const ping = await call(base, token, 'SELECT 1');
     log(`SELECT 1 -> HTTP ${ping.status}${ping.error ? ' error: ' + ping.error : ''}`);
+    const parts = (token || '').split('.');
+    log(`Token: ${token ? `${token.length} characters, ${parts.length === 3 ? 'looks like a database token' : 'does NOT look like a Turso database token'}` : 'missing'}`);
     if (ping.status !== 200 || ping.error) { log(`Turso says: ${ping.body}`); return; }
     for (const sql of [...schemaStatements(false), "SELECT name FROM pragma_table_info('daily_completions')"]) {
       const r = await call(base, token, sql);

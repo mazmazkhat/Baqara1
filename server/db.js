@@ -54,13 +54,19 @@ export function schemaStatements(includePragmas) {
     .filter((x) => x && (includePragmas || !/^PRAGMA/i.test(x)));
 }
 
+/** Tidy a pasted setting: remove quotes, a leading "Bearer", spaces and line breaks. */
+export function cleanSetting(v) {
+  if (!v) return v;
+  return String(v).trim().replace(/^["'`]+|["'`]+$/g, '').replace(/^Bearer\s+/i, '').replace(/\s+/g, '');
+}
+
 export async function openDb(url = process.env.DATABASE_URL || 'file:var/baqara.db', authToken = process.env.DATABASE_AUTH_TOKEN) {
-  url = url.trim();
+  url = cleanSetting(url);
   const local = url.startsWith('file:');
   if (local) mkdirSync(path.dirname(path.resolve(url.slice(5))), { recursive: true });
   // For Turso, talk plain HTTPS (most compatible with hosts and proxies) instead of WebSockets.
   const connectUrl = url.startsWith('libsql://') ? 'https://' + url.slice('libsql://'.length) : url;
-  const client = createClient({ url: connectUrl, authToken: authToken ? authToken.trim() : undefined });
+  const client = createClient({ url: connectUrl, authToken: cleanSetting(authToken) || undefined });
   if (local) await client.execute('PRAGMA journal_mode = WAL').catch(() => {});
   // Create tables one statement at a time (PRAGMAs are local-file settings only).
   await client.batch(schemaStatements(local), 'write');

@@ -1,12 +1,12 @@
 import { randomInt } from 'node:crypto';
-import { openDb } from './db.js';
+import { openDb, cleanSetting } from './db.js';
 import { createApp } from './app.js';
 import { diagnoseTurso } from './turso-diagnose.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const prod = process.env.NODE_ENV === 'production';
 
-const dbUrl = (process.env.DATABASE_URL || '').trim();
+const dbUrl = cleanSetting(process.env.DATABASE_URL || '') || '';
 if (dbUrl && !/^(libsql|https|wss?|file):/.test(dbUrl)) {
   console.error(`\n  DATABASE_URL looks wrong. It should start with libsql:// (copy it from your database page on turso.tech).\n  It currently starts with: "${dbUrl.slice(0, 12)}…"\n`);
   process.exit(1);
@@ -24,7 +24,7 @@ try {
   console.error(`  Details: ${e.message}`);
   if (e.cause) console.error(`  Cause: ${e.cause.message || e.cause}`);
   console.error(`  Database host: ${dbUrl.replace(/^\w+:\/\//, '').split(/[/?]/)[0]}\n`);
-  if (dbUrl && !dbUrl.startsWith('file:')) await diagnoseTurso(dbUrl, (process.env.DATABASE_AUTH_TOKEN || '').trim());
+  if (dbUrl && !dbUrl.startsWith('file:')) await diagnoseTurso(dbUrl, cleanSetting(process.env.DATABASE_AUTH_TOKEN || ''));
   process.exit(1);
 }
 const needsSetup = (await db.get('SELECT COUNT(*) AS n FROM families')).n === 0;
