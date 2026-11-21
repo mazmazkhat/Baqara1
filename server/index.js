@@ -1,6 +1,7 @@
 import { randomInt } from 'node:crypto';
 import { openDb } from './db.js';
 import { createApp } from './app.js';
+import { diagnoseTurso } from './turso-diagnose.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const prod = process.env.NODE_ENV === 'production';
@@ -23,6 +24,7 @@ try {
   console.error(`  Details: ${e.message}`);
   if (e.cause) console.error(`  Cause: ${e.cause.message || e.cause}`);
   console.error(`  Database host: ${dbUrl.replace(/^\w+:\/\//, '').split(/[/?]/)[0]}\n`);
+  if (dbUrl && !dbUrl.startsWith('file:')) await diagnoseTurso(dbUrl, (process.env.DATABASE_AUTH_TOKEN || '').trim());
   process.exit(1);
 }
 const needsSetup = (await db.get('SELECT COUNT(*) AS n FROM families')).n === 0;
