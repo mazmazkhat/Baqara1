@@ -1,6 +1,9 @@
 import { test, describe, before } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { openDb } from '../server/db.js';
 import { createApp } from '../server/app.js';
 
@@ -8,8 +11,10 @@ const H = { 'X-Requested-With': 'baqara' };
 let clock = new Date('2026-11-21T10:00:00Z');
 const setClock = (iso) => { clock = new Date(iso); };
 
-function makeApp() {
-  const db = openDb(':memory:');
+const TMP = mkdtempSync(path.join(tmpdir(), 'baqara-api-'));
+let dbCount = 0;
+async function makeApp() {
+  const db = await openDb(`file:${path.join(TMP, `t${++dbCount}.db`)}`);
   const app = createApp({ db, now: () => clock, setupCode: 'SETUP-123' });
   return { db, app };
 }
@@ -35,7 +40,8 @@ async function inviteAndJoin(app, admin, displayName, login, pin = '2580', timez
 }
 
 describe('setup, registration and login', () => {
-  const { app } = makeApp();
+  let app;
+  before(async () => { ({ app } = await makeApp()); });
 
   test('setup requires the one-time code', async () => {
     assert.equal((await request(app).get('/api/setup/status')).body.needsSetup, true);
@@ -96,9 +102,9 @@ describe('setup, registration and login', () => {
 });
 
 describe('invitations and the six-member family', () => {
-  const { app } = makeApp();
+  let app;
   let admin;
-  before(async () => { setClock('2026-11-21T10:00:00Z'); admin = await setupFamily(app); });
+  before(async () => { ({ app } = await makeApp()); setClock('2026-11-21T10:00:00Z'); admin = await setupFamily(app); });
 
   test('invite link shows who it is for, then can be used exactly once', async () => {
     const inv = await post(admin, '/api/admin/members', { displayName: 'Maryam' });
@@ -169,9 +175,10 @@ describe('invitations and the six-member family', () => {
 });
 
 describe('permissions and privacy', () => {
-  const { app } = makeApp();
+  let app;
   let adminA, member, adminB, memberB;
   before(async () => {
+    ({ app } = await makeApp());
     setClock('2026-11-21T10:00:00Z');
     adminA = await setupFamily(app);
     member = (await inviteAndJoin(app, adminA, 'Maryam', 'maryam')).agent;
@@ -192,13 +199,13 @@ describe('permissions and privacy', () => {
   test('families are isolated from one another', async () => {
     // Create family B directly via a second app sharing the same DB is not possible after setup,
     // so insert it the way setup would, then sign in through the API.
-    const { db, app: app2 } = makeApp();
+    const { db, app: app2 } = await makeApp();
     adminA = await setupFamily(app2, 'Family A', 'adama');
     const mA = await inviteAndJoin(app2, adminA, 'Maryam', 'maryama');
     const { hashPin } = await import('../server/auth.js');
-    const f = db.prepare("INSERT INTO families (name, timezone, created_at) VALUES ('Family B', 'UTC', 'x')").run();
-    const u = db.prepare("INSERT INTO users (display_name, login_name, pin_hash, created_at) VALUES ('Bilal', 'bilal', ?, 'x')").run(hashPin('482915'));
-    db.prepare("INSERT INTO family_memberships (family_id, user_id, role, status, joined_at) VALUES (?, ?, 'admin', 'active', 'x')").run(f.lastInsertRowid, u.lastInsertRowid);
+    const f = await db.run("INSERT INTO families (name, timezone, created_at) VALUES ('Family B', 'UTC', 'x')");
+    const u = await db.run("INSERT INTO users (display_name, login_name, pin_hash, created_at) VALUES ('Bilal', 'bilal', ?, 'x')", hashPin('482915'));
+    await db.run("INSERT INTO family_memberships (family_id, user_id, role, status, joined_at) VALUES (?, ?, 'admin', 'active', 'x')", f.lastInsertRowid, u.lastInsertRowid);
     adminB = request.agent(app2);
     await post(adminB, '/api/auth/login', { loginName: 'bilal', pin: '482915' });
     memberB = adminB;
@@ -228,15 +235,30 @@ describe('permissions and privacy', () => {
     assert.equal((await post(request(app), '/api/auth/login', { loginName: 'maryam', pin: '2580' })).status, 401);
   });
 
+  test('family backup is admin-only and never contains PINs or session tokens', async () => {
+    const { app: a3 } = await makeApp();
+    const adm = await setupFamily(a3);
+    const m2 = (await inviteAndJoin(a3, adm, 'Ibrahim', 'ibrahim2')).agent;
+    await put(m2, '/api/progress', { verse: 7 });
+    assert.equal((await m2.get('/api/admin/backup')).status, 403);
+    const b = await adm.get('/api/admin/backup');
+    assert.equal(b.status, 200);
+    assert.match(b.headers['content-disposition'], /family-backup-/);
+    assert.ok(b.body.members.some((m) => m.profile.loginName === 'ibrahim2' && m.progress.current_verse === 7));
+    const text = JSON.stringify(b.body);
+    assert.equal(/scrypt|pin_hash|token/i.test(text), false);
+  });
+
   test('the only administrator cannot delete their own account', async () => {
     assert.equal((await del(adminA, '/api/me', { pin: '482915' })).body.error, 'last_admin');
   });
 });
 
 describe('reading progress, completion and time zones', () => {
-  const { app } = makeApp();
+  let app;
   let admin, maryam, ibrahim;
   before(async () => {
+    ({ app } = await makeApp());
     setClock('2026-11-21T10:00:00Z');
     admin = await setupFamily(app);
     maryam = (await inviteAndJoin(app, admin, 'Maryam', 'maryam', '2580', 'Asia/Riyadh')).agent;
@@ -377,6 +399,28 @@ describe('reading progress, completion and time zones', () => {
     d = (await maryam.get('/api/family/dashboard')).body;
     assert.deepEqual(d.today, { done: 3, active: 3 });
     assert.equal(d.totals.daysAllTogether >= 1, true);
+  });
+
+  test('two taps on "complete" at the same moment record the day once', async () => {
+    setClock('2026-12-05T12:00:00Z');
+    const rs = await Promise.all([1, 2, 3].map(() => post(maryam, '/api/completions/today', {})));
+    assert.deepEqual(rs.map((r) => r.status), [200, 200, 200]);
+    const h = (await maryam.get('/api/history')).body;
+    assert.equal(h.completions.filter((c) => c.local_date === '2026-12-05').length, 1);
+  });
+
+  test('removing a member deletes all of their rows', async () => {
+    const { db, app: a2 } = await makeApp();
+    const adm = await setupFamily(a2);
+    const m = await inviteAndJoin(a2, adm, 'Temp', 'tempuser');
+    await put(m.agent, '/api/progress', { verse: 9 });
+    await post(m.agent, '/api/bookmarks', { verse: 9 });
+    await post(m.agent, '/api/completions/today', {});
+    await del(adm, `/api/admin/members/${m.userId}`);
+    for (const t of ['sessions', 'invitations', 'reading_progress', 'daily_completions', 'bookmarks', 'family_memberships']) {
+      assert.equal((await db.get(`SELECT COUNT(*) AS n FROM ${t} WHERE user_id = ?`, m.userId)).n, 0, t);
+    }
+    assert.equal((await db.get('SELECT COUNT(*) AS n FROM users WHERE id = ?', m.userId)).n, 0);
   });
 
   test('malformed JSON gets a clean 400', async () => {

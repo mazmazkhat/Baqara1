@@ -77,6 +77,7 @@ const en = {
   create_invite: 'Create invite link', invite_ready: 'Send this link to {name}. It works once and expires in 7 days.',
   new_link: 'New sign-in link', new_link_reset: 'New link (reset PIN)', remove_confirm: 'Remove {name} from the family? Their reading history will be deleted.',
   role_admin: 'Administrator', role_member: 'Member', status_invited: 'Invitation sent', last_seen: 'Last active {d}', family_full: 'The family has six members.',
+  backup: 'Download family backup', backup_help: 'A copy of everyone’s reading history (no PINs). Keep it somewhere safe; download one every month or so.',
   about: 'About', disclaimer: 'This application is a reading and tracking tool. It is not a source of religious rulings — please consult qualified scholars for religious questions.',
   coming_soon: 'Coming next: reminders, audio recitation, translations and reflections.',
 
@@ -163,6 +164,7 @@ const ar = {
   create_invite: 'إنشاء رابط دعوة', invite_ready: 'أرسل هذا الرابط إلى {name}. يعمل مرة واحدة وتنتهي صلاحيته بعد ٧ أيام.',
   new_link: 'رابط دخول جديد', new_link_reset: 'رابط جديد (إعادة تعيين الرمز)', remove_confirm: 'إزالة {name} من العائلة؟ سيُحذف سجل قراءته.',
   role_admin: 'مسؤول', role_member: 'فرد', status_invited: 'أُرسلت الدعوة', last_seen: 'آخر نشاط {d}', family_full: 'اكتمل عدد العائلة (ستة أفراد).',
+  backup: 'تنزيل نسخة احتياطية للعائلة', backup_help: 'نسخة من سجل قراءة الجميع (دون الرموز السرية). احفظها في مكان آمن، ويُفضّل تنزيلها كل شهر تقريبًا.',
   about: 'حول التطبيق', disclaimer: 'هذا التطبيق أداة للقراءة والمتابعة، وليس مصدرًا للفتوى أو الأحكام الشرعية. يُرجى الرجوع إلى أهل العلم في المسائل الدينية.',
   coming_soon: 'قريبًا: التذكيرات، والتلاوة الصوتية، والترجمات، والتأملات.',
 

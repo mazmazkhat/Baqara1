@@ -234,6 +234,9 @@ function Admin() {
           </div>
         );
       })}
+      <h3 style={{ marginTop: 22 }}>{t('backup')}</h3>
+      <p className="muted small" style={{ marginTop: 0 }}>{t('backup_help')}</p>
+      <a className="btn" href="/api/admin/backup" download>{t('backup')}</a>
       {data && (full ? <p className="muted small">{t('family_full')}</p> : (
         <form onSubmit={add} style={{ marginTop: 12 }}>
           <label className="field"><span>{t('add_member')}</span><input value={newName} maxLength={40} placeholder={t('member_name')} onChange={(e) => setNewName(e.target.value)} /></label>

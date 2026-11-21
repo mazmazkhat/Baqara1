@@ -3,7 +3,7 @@ import helmet from 'helmet';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { tx } from './db.js';
+import { deleteUserData } from './db.js';
 import {
   SESSION_COOKIE, SESSION_DAYS, MAX_FAILED_BEFORE_LOCK, sha256, newToken, hashPin, verifyPin,
   pinProblem, loginNameProblem, IpLimiter, parseCookies,
@@ -33,7 +33,7 @@ const int = (v) => (typeof v === 'number' || (typeof v === 'string' && /^\d+$/.t
 
 /**
  * @param {object} o
- * @param {import('node:sqlite').DatabaseSync} o.db
+ * @param {import('./db.js').Db} o.db
  * @param {() => Date} [o.now] injectable clock (tests)
  * @param {string|null} [o.setupCode] one-time code required to create the first family
  * @param {boolean} [o.secureCookies]
@@ -55,8 +55,10 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
           fontSrc: ["'self'", 'data:'],
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
+          upgradeInsecureRequests: secureCookies ? [] : null,
         },
       },
+      strictTransportSecurity: secureCookies,
       crossOriginEmbedderPolicy: false,
     }),
   );
@@ -71,73 +73,83 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     next();
   });
 
-  // ---------- session helpers ----------
+  // Lightweight health check for the host (does not touch the database).
+  app.get('/healthz', (req, res) => res.type('text').send('ok'));
+
+  // ---------- helpers ----------
   const iso = () => now().toISOString();
 
-  function startSession(res, userId) {
+  /** Wrap an async route: its return value is sent as JSON; errors go to the error handler. */
+  const route = (fn) => (req, res, next) => {
+    Promise.resolve()
+      .then(() => fn(req, res))
+      .then((r) => { if (r !== undefined && !res.headersSent) res.json(r); })
+      .catch(next);
+  };
+
+  async function startSession(res, userId) {
     const token = newToken();
     const t = now();
     const expires = new Date(t.getTime() + SESSION_DAYS * 86400000);
-    db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?)').run(
-      sha256(token), userId, t.toISOString(), expires.toISOString(), t.toISOString(),
-    );
+    await db.run('INSERT INTO sessions (token_hash, user_id, created_at, expires_at, last_seen_at) VALUES (?, ?, ?, ?, ?)',
+      sha256(token), userId, t.toISOString(), expires.toISOString(), t.toISOString());
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true, sameSite: 'lax', secure: secureCookies, path: '/', maxAge: SESSION_DAYS * 86400000,
     });
   }
 
-  function loadSessionUser(req) {
+  async function loadSessionUser(req) {
     const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
     if (!token) return null;
-    const row = db
-      .prepare(
-        `SELECT u.*, s.token_hash, s.expires_at AS session_expires, m.family_id, m.role, m.status, m.joined_at
-           FROM sessions s JOIN users u ON u.id = s.user_id
-           JOIN family_memberships m ON m.user_id = u.id
-          WHERE s.token_hash = ?`,
-      )
-      .get(sha256(token));
+    const row = await db.get(
+      `SELECT u.*, s.token_hash, s.expires_at AS session_expires, s.last_seen_at, m.family_id, m.role, m.status, m.joined_at
+         FROM sessions s JOIN users u ON u.id = s.user_id
+         JOIN family_memberships m ON m.user_id = u.id
+        WHERE s.token_hash = ?`,
+      sha256(token),
+    );
     if (!row || row.session_expires < iso() || row.status !== 'active') return null;
-    db.prepare('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?').run(iso(), row.token_hash);
+    // Record activity at most once an hour (saves database writes).
+    if (now().getTime() - new Date(row.last_seen_at).getTime() > 3600000) {
+      await db.run('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?', iso(), row.token_hash);
+    }
     return row;
   }
 
   const requireUser = (req, res, next) => {
-    const u = loadSessionUser(req);
-    if (!u) return res.status(401).json({ error: 'not_signed_in' });
-    req.user = u;
-    next();
+    loadSessionUser(req).then((u) => {
+      if (!u) return res.status(401).json({ error: 'not_signed_in' });
+      req.user = u;
+      next();
+    }).catch(next);
   };
   const requireAdmin = (req, res, next) => (req.user.role === 'admin' ? next() : res.status(403).json({ error: 'admin_only' }));
 
   /** Ensure the target user belongs to the requesting admin's family. */
-  function memberOfMyFamily(req, userId) {
-    const m = db
-      .prepare('SELECT m.*, u.display_name FROM family_memberships m JOIN users u ON u.id = m.user_id WHERE m.user_id = ? AND m.family_id = ?')
-      .get(userId, req.user.family_id);
+  async function memberOfMyFamily(req, userId) {
+    const m = await db.get('SELECT m.*, u.display_name FROM family_memberships m JOIN users u ON u.id = m.user_id WHERE m.user_id = ? AND m.family_id = ?',
+      userId, req.user.family_id);
     if (!m) fail(404, 'member_not_found');
     return m;
   }
 
-  function createInvite(familyId, userId, purpose) {
+  async function createInvite(d, familyId, userId, purpose) {
     const token = newToken();
-    db.prepare('UPDATE invitations SET used_at = ? WHERE user_id = ? AND used_at IS NULL').run(iso(), userId); // revoke older links
-    db.prepare('INSERT INTO invitations (family_id, user_id, token_hash, purpose, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)').run(
-      familyId, userId, sha256(token), purpose, iso(), new Date(now().getTime() + INVITE_DAYS * 86400000).toISOString(),
-    );
+    await d.run('UPDATE invitations SET used_at = ? WHERE user_id = ? AND used_at IS NULL', iso(), userId); // revoke older links
+    await d.run('INSERT INTO invitations (family_id, user_id, token_hash, purpose, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+      familyId, userId, sha256(token), purpose, iso(), new Date(now().getTime() + INVITE_DAYS * 86400000).toISOString());
     return { token, path: `/invite/${token}`, expiresInDays: INVITE_DAYS };
   }
 
-  function findInvite(token) {
+  async function findInvite(token) {
     if (typeof token !== 'string' || token.length > 100) return null;
-    const inv = db
-      .prepare(
-        `SELECT i.*, u.display_name, u.login_name, f.name AS family_name, m.role
-           FROM invitations i JOIN users u ON u.id = i.user_id JOIN families f ON f.id = i.family_id
-           JOIN family_memberships m ON m.user_id = i.user_id AND m.family_id = i.family_id
-          WHERE i.token_hash = ?`,
-      )
-      .get(sha256(token));
+    const inv = await db.get(
+      `SELECT i.*, u.display_name, u.login_name, f.name AS family_name, m.role
+         FROM invitations i JOIN users u ON u.id = i.user_id JOIN families f ON f.id = i.family_id
+         JOIN family_memberships m ON m.user_id = i.user_id AND m.family_id = i.family_id
+        WHERE i.token_hash = ?`,
+      sha256(token),
+    );
     if (!inv || inv.used_at || inv.expires_at < iso()) return null;
     return inv;
   }
@@ -149,22 +161,13 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     };
   }
 
-  const wrap = (fn) => (req, res, next) => {
-    try {
-      const r = fn(req, res);
-      if (r !== undefined && !res.headersSent) res.json(r);
-    } catch (e) {
-      next(e);
-    }
-  };
-
   // ---------- setup (first family) ----------
-  const familyCount = () => db.prepare('SELECT COUNT(*) AS n FROM families').get().n;
+  const familyCount = async () => (await db.get('SELECT COUNT(*) AS n FROM families')).n;
 
-  app.get('/api/setup/status', wrap(() => ({ needsSetup: familyCount() === 0 })));
+  app.get('/api/setup/status', route(async () => ({ needsSetup: (await familyCount()) === 0 })));
 
-  app.post('/api/setup', wrap((req, res) => {
-    if (familyCount() > 0) fail(409, 'already_set_up');
+  app.post('/api/setup', route(async (req, res) => {
+    if ((await familyCount()) > 0) fail(409, 'already_set_up');
     if (!setupCode || req.body.setupCode !== setupCode) fail(403, 'bad_setup_code');
     const familyName = str(req.body.familyName);
     const displayName = str(req.body.displayName, 40);
@@ -174,60 +177,59 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     if (!familyName || !displayName) fail(400, 'name_required');
     const lp = loginNameProblem(loginName); if (lp) fail(400, lp);
     const pp = pinProblem(req.body.pin, { minLength: 6 }); if (pp) fail(400, pp);
-    const userId = tx(db, () => {
-      const f = db.prepare('INSERT INTO families (name, timezone, created_at) VALUES (?, ?, ?)').run(familyName, tz, iso());
-      const u = db.prepare(
-        'INSERT INTO users (display_name, login_name, pin_hash, locale, timezone, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-      ).run(displayName, loginName, hashPin(req.body.pin), locale, tz, iso());
-      db.prepare("INSERT INTO family_memberships (family_id, user_id, role, status, sort_order, joined_at) VALUES (?, ?, 'admin', 'active', 0, ?)").run(
-        f.lastInsertRowid, u.lastInsertRowid, iso(),
-      );
-      return Number(u.lastInsertRowid);
+    const pinHash = hashPin(req.body.pin);
+    const userId = await db.tx(async (t) => {
+      if ((await t.get('SELECT COUNT(*) AS n FROM families')).n > 0) fail(409, 'already_set_up');
+      const f = await t.run('INSERT INTO families (name, timezone, created_at) VALUES (?, ?, ?)', familyName, tz, iso());
+      const u = await t.run('INSERT INTO users (display_name, login_name, pin_hash, locale, timezone, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        displayName, loginName, pinHash, locale, tz, iso());
+      await t.run("INSERT INTO family_memberships (family_id, user_id, role, status, sort_order, joined_at) VALUES (?, ?, 'admin', 'active', 0, ?)",
+        f.lastInsertRowid, u.lastInsertRowid, iso());
+      return u.lastInsertRowid;
     });
-    startSession(res, userId);
+    await startSession(res, userId);
     return { ok: true };
   }));
 
   // ---------- invitations ----------
-  app.get('/api/invite/:token', wrap((req) => {
-    const inv = findInvite(req.params.token);
+  app.get('/api/invite/:token', route(async (req) => {
+    const inv = await findInvite(req.params.token);
     if (!inv) fail(404, 'invite_invalid');
     return { displayName: inv.display_name, familyName: inv.family_name, purpose: inv.purpose, loginName: inv.login_name, role: inv.role };
   }));
 
-  app.post('/api/invite/:token/accept', wrap((req, res) => {
-    const inv = findInvite(req.params.token);
+  app.post('/api/invite/:token/accept', route(async (req, res) => {
+    const inv = await findInvite(req.params.token);
     if (!inv) fail(404, 'invite_invalid');
     const pp = pinProblem(req.body.pin, { minLength: inv.role === 'admin' ? 6 : 4 }); if (pp) fail(400, pp);
     let loginName = inv.login_name;
     if (inv.purpose === 'join') {
       loginName = str(req.body.loginName, 30).toLowerCase();
       const lp = loginNameProblem(loginName); if (lp) fail(400, lp);
-      const taken = db.prepare('SELECT id FROM users WHERE login_name = ? AND id != ?').get(loginName, inv.user_id);
+      const taken = await db.get('SELECT id FROM users WHERE login_name = ? AND id != ?', loginName, inv.user_id);
       if (taken) fail(409, 'login_name_taken');
     }
     const tz = isValidTimeZone(req.body.timezone) ? req.body.timezone : null;
-    tx(db, () => {
-      db.prepare('UPDATE users SET login_name = ?, pin_hash = ?, failed_logins = 0, locked_until = NULL, timezone = COALESCE(?, timezone), locale = ? WHERE id = ?').run(
-        loginName, hashPin(req.body.pin), inv.purpose === 'join' ? tz : null, req.body.locale === 'ar' ? 'ar' : 'en', inv.user_id,
-      );
-      db.prepare("UPDATE family_memberships SET status = 'active', joined_at = COALESCE(joined_at, ?) WHERE user_id = ?").run(iso(), inv.user_id);
-      db.prepare('UPDATE invitations SET used_at = ? WHERE id = ?').run(iso(), inv.id);
-      if (inv.purpose === 'reset') db.prepare('DELETE FROM sessions WHERE user_id = ?').run(inv.user_id); // sign out other devices
+    const pinHash = hashPin(req.body.pin);
+    await db.tx(async (t) => {
+      const used = await t.run('UPDATE invitations SET used_at = ? WHERE id = ? AND used_at IS NULL', iso(), inv.id);
+      if (!used.changes) fail(404, 'invite_invalid'); // two taps at once: only the first wins
+      await t.run('UPDATE users SET login_name = ?, pin_hash = ?, failed_logins = 0, locked_until = NULL, timezone = COALESCE(?, timezone), locale = ? WHERE id = ?',
+        loginName, pinHash, inv.purpose === 'join' ? tz : null, req.body.locale === 'ar' ? 'ar' : 'en', inv.user_id);
+      await t.run("UPDATE family_memberships SET status = 'active', joined_at = COALESCE(joined_at, ?) WHERE user_id = ?", iso(), inv.user_id);
+      if (inv.purpose === 'reset') await t.run('DELETE FROM sessions WHERE user_id = ?', inv.user_id); // sign out other devices
     });
-    startSession(res, inv.user_id);
+    await startSession(res, inv.user_id);
     return { ok: true };
   }));
 
   // ---------- login / logout ----------
-  app.post('/api/auth/login', wrap((req, res) => {
+  app.post('/api/auth/login', route(async (req, res) => {
     const ip = req.ip;
     const t = now().getTime();
     if (ipLimiter.blocked(ip, t)) fail(429, 'too_many_attempts');
     const loginName = str(req.body.loginName, 30).toLowerCase();
-    const u = db
-      .prepare("SELECT u.* FROM users u JOIN family_memberships m ON m.user_id = u.id WHERE u.login_name = ? AND m.status = 'active'")
-      .get(loginName);
+    const u = await db.get("SELECT u.* FROM users u JOIN family_memberships m ON m.user_id = u.id WHERE u.login_name = ? AND m.status = 'active'", loginName);
     if (u?.locked_until && u.locked_until > iso()) {
       return res.status(429).json({ error: 'account_locked', retryAt: u.locked_until });
     }
@@ -238,19 +240,19 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
         // 5 wrong PINs -> 15 min pause, doubling each further time.
         const lockMinutes = failed >= MAX_FAILED_BEFORE_LOCK ? 15 * 2 ** (failed - MAX_FAILED_BEFORE_LOCK) : 0;
         const until = lockMinutes ? new Date(t + Math.min(lockMinutes, 24 * 60) * 60000).toISOString() : null;
-        db.prepare('UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?').run(failed, until, u.id);
+        await db.run('UPDATE users SET failed_logins = ?, locked_until = ? WHERE id = ?', failed, until, u.id);
       }
       fail(401, 'bad_credentials');
     }
-    db.prepare('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = ?').run(u.id);
+    await db.run('UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = ?', u.id);
     ipLimiter.reset(ip);
-    startSession(res, u.id);
+    await startSession(res, u.id);
     return { ok: true };
   }));
 
-  app.post('/api/auth/logout', wrap((req, res) => {
+  app.post('/api/auth/logout', route(async (req, res) => {
     const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-    if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
+    if (token) await db.run('DELETE FROM sessions WHERE token_hash = ?', sha256(token));
     res.clearCookie(SESSION_COOKIE, { path: '/' });
     return { ok: true };
   }));
@@ -263,16 +265,16 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     res.json(QURAN);
   });
 
-  app.get('/api/me', wrap((req) => {
-    const f = db.prepare('SELECT id, name, timezone, max_members FROM families WHERE id = ?').get(req.user.family_id);
+  app.get('/api/me', route(async (req) => {
+    const f = await db.get('SELECT id, name, timezone, max_members FROM families WHERE id = ?', req.user.family_id);
     return {
       user: publicUser(req.user),
       family: { id: f.id, name: f.name, timezone: f.timezone, maxMembers: f.max_members },
-      stats: personalStats(db, req.user, req.user.joined_at, now()),
+      stats: await personalStats(db, req.user, req.user.joined_at, now()),
     };
   }));
 
-  app.patch('/api/me', wrap((req) => {
+  app.patch('/api/me', route(async (req) => {
     const b = req.body;
     const u = req.user;
     const displayName = b.displayName !== undefined ? str(b.displayName, 40) : u.display_name;
@@ -287,148 +289,147 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
       fontScale = Number(b.fontScale);
       if (!(fontScale >= 0.8 && fontScale <= 2.2)) fail(400, 'bad_font_scale');
     }
-    db.prepare('UPDATE users SET display_name = ?, avatar = ?, avatar_color = ?, locale = ?, theme = ?, timezone = ?, font_scale = ? WHERE id = ?').run(
-      displayName, avatar, avatarColor, locale, theme, timezone, fontScale, u.id,
-    );
+    await db.run('UPDATE users SET display_name = ?, avatar = ?, avatar_color = ?, locale = ?, theme = ?, timezone = ?, font_scale = ? WHERE id = ?',
+      displayName, avatar, avatarColor, locale, theme, timezone, fontScale, u.id);
     return { ok: true };
   }));
 
-  app.post('/api/me/pin', wrap((req) => {
+  app.post('/api/me/pin', route(async (req) => {
     if (!verifyPin(String(req.body.currentPin ?? ''), req.user.pin_hash)) fail(400, 'current_pin_wrong');
     const pp = pinProblem(req.body.newPin, { minLength: req.user.role === 'admin' ? 6 : 4 }); if (pp) fail(400, pp);
-    db.prepare('UPDATE users SET pin_hash = ? WHERE id = ?').run(hashPin(req.body.newPin), req.user.id);
+    await db.run('UPDATE users SET pin_hash = ? WHERE id = ?', hashPin(req.body.newPin), req.user.id);
     return { ok: true };
   }));
 
-  app.get('/api/me/export', (req, res) => {
-    const id = req.user.id;
-    const data = {
-      exportedAt: iso(),
-      profile: publicUser(req.user),
-      plan: getPlan(db, id),
-      progress: db.prepare('SELECT current_verse, furthest_verse, cycles_completed, total_verses_read, updated_at FROM reading_progress WHERE user_id = ?').get(id) ?? null,
-      completions: db.prepare('SELECT local_date, from_verse, to_verse, completed_at FROM daily_completions WHERE user_id = ? ORDER BY local_date').all(id),
-      bookmarks: db.prepare('SELECT verse, created_at FROM bookmarks WHERE user_id = ? ORDER BY verse').all(id),
-      reflections: db.prepare('SELECT local_date, verse_from, verse_to, body, visibility, created_at, updated_at FROM reflections WHERE user_id = ?').all(id),
+  async function personalExport(user) {
+    const id = user.id;
+    return {
+      profile: publicUser(user),
+      plan: await getPlan(db, id),
+      progress: (await db.get('SELECT current_verse, furthest_verse, cycles_completed, total_verses_read, updated_at FROM reading_progress WHERE user_id = ?', id)) ?? null,
+      completions: await db.all('SELECT local_date, from_verse, to_verse, completed_at FROM daily_completions WHERE user_id = ? ORDER BY local_date', id),
+      bookmarks: await db.all('SELECT verse, created_at FROM bookmarks WHERE user_id = ? ORDER BY verse', id),
+      reflections: await db.all('SELECT local_date, verse_from, verse_to, body, visibility, created_at, updated_at FROM reflections WHERE user_id = ?', id),
     };
-    res.set('Content-Disposition', 'attachment; filename="my-baqarah-reading.json"');
-    res.json(data);
-  });
+  }
 
-  app.delete('/api/me', wrap((req, res) => {
+  app.get('/api/me/export', route(async (req, res) => {
+    res.set('Content-Disposition', 'attachment; filename="my-baqarah-reading.json"');
+    return { exportedAt: iso(), ...(await personalExport(req.user)) };
+  }));
+
+  app.delete('/api/me', route(async (req, res) => {
     if (!verifyPin(String(req.body?.pin ?? ''), req.user.pin_hash)) fail(400, 'current_pin_wrong');
     if (req.user.role === 'admin') {
-      const admins = db.prepare("SELECT COUNT(*) AS n FROM family_memberships WHERE family_id = ? AND role = 'admin' AND status = 'active'").get(req.user.family_id).n;
+      const admins = (await db.get("SELECT COUNT(*) AS n FROM family_memberships WHERE family_id = ? AND role = 'admin' AND status = 'active'", req.user.family_id)).n;
       if (admins <= 1) fail(409, 'last_admin');
     }
-    db.prepare('DELETE FROM users WHERE id = ?').run(req.user.id); // cascades to all personal data
+    await deleteUserData(db, req.user.id);
     res.clearCookie(SESSION_COOKIE, { path: '/' });
     return { ok: true };
   }));
 
   // ---------- reading ----------
-  app.get('/api/progress', wrap((req) => {
-    const p = getProgress(db, req.user.id, iso());
-    const bookmarks = db.prepare('SELECT verse FROM bookmarks WHERE user_id = ? ORDER BY verse').all(req.user.id).map((r) => r.verse);
-    return { position: p.current_verse, portion: todayPortion(getPlan(db, req.user.id), p), bookmarks };
+  app.get('/api/progress', route(async (req) => {
+    const [p, plan, bm] = await Promise.all([
+      getProgress(db, req.user.id, iso()),
+      getPlan(db, req.user.id),
+      db.all('SELECT verse FROM bookmarks WHERE user_id = ? ORDER BY verse', req.user.id),
+    ]);
+    return { position: p.current_verse, portion: todayPortion(plan, p), bookmarks: bm.map((r) => r.verse) };
   }));
 
-  app.put('/api/progress', wrap((req) => {
+  app.put('/api/progress', route(async (req) => {
     const verse = int(req.body.verse);
     const seen = req.body.seen === undefined ? verse : int(req.body.seen);
     if (!(verse >= 1 && verse <= TOTAL_VERSES) || !(seen >= 1 && seen <= TOTAL_VERSES)) fail(400, 'bad_verse');
-    saveProgress(db, req.user.id, verse, seen, iso());
+    await saveProgress(db, req.user.id, verse, seen, iso());
     return { ok: true };
   }));
 
-  app.put('/api/plan', wrap((req) => {
+  app.put('/api/plan', route(async (req) => {
     const type = req.body.planType;
     if (!['free', 'whole', 'verses', 'days'].includes(type)) fail(400, 'bad_plan');
     const vpd = type === 'verses' ? int(req.body.versesPerDay) : null;
     const days = type === 'days' ? int(req.body.daysTotal) : null;
     if (type === 'verses' && !(vpd >= 1 && vpd <= TOTAL_VERSES)) fail(400, 'bad_plan');
     if (type === 'days' && !(days >= 1 && days <= 365)) fail(400, 'bad_plan');
-    db.prepare(
+    await db.run(
       `INSERT INTO reading_plans (user_id, plan_type, verses_per_day, days_total, updated_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(user_id) DO UPDATE SET plan_type = excluded.plan_type, verses_per_day = excluded.verses_per_day,
          days_total = excluded.days_total, updated_at = excluded.updated_at`,
-    ).run(req.user.id, type, vpd, days, iso());
+      req.user.id, type, vpd, days, iso());
     return { ok: true };
   }));
 
-  app.post('/api/completions/today', wrap((req) => {
-    const r = tx(db, () => markComplete(db, req.user, req.user.family_id, now()));
-    return { ok: true, ...r };
+  app.post('/api/completions/today', route(async (req) => {
+    try {
+      const r = await db.tx((t) => markComplete(t, req.user, req.user.family_id, now()));
+      return { ok: true, ...r };
+    } catch (e) {
+      // A double tap can race to insert the same day twice; the unique key keeps one, so report it as done.
+      if (/UNIQUE/i.test(String(e.message))) return { ok: true, already: true };
+      throw e;
+    }
   }));
 
-  app.delete('/api/completions/today', wrap((req) => {
-    const ok = tx(db, () => undoComplete(db, req.user, now()));
+  app.delete('/api/completions/today', route(async (req) => {
+    const ok = await db.tx((t) => undoComplete(t, req.user, now()));
     if (!ok) fail(404, 'not_completed_today');
     return { ok: true };
   }));
 
-  app.get('/api/history', wrap((req) => {
-    const rows = db
-      .prepare('SELECT local_date, from_verse, to_verse FROM daily_completions WHERE user_id = ? ORDER BY local_date DESC LIMIT 400')
-      .all(req.user.id);
-    const bookmarks = db.prepare('SELECT verse, created_at FROM bookmarks WHERE user_id = ? ORDER BY verse').all(req.user.id);
-    return { completions: rows, bookmarks, stats: personalStats(db, req.user, req.user.joined_at, now()) };
+  app.get('/api/history', route(async (req) => {
+    const [rows, bookmarks, stats] = await Promise.all([
+      db.all('SELECT local_date, from_verse, to_verse FROM daily_completions WHERE user_id = ? ORDER BY local_date DESC LIMIT 400', req.user.id),
+      db.all('SELECT verse, created_at FROM bookmarks WHERE user_id = ? ORDER BY verse', req.user.id),
+      personalStats(db, req.user, req.user.joined_at, now()),
+    ]);
+    return { completions: rows, bookmarks, stats };
   }));
 
-  app.post('/api/bookmarks', wrap((req) => {
+  app.post('/api/bookmarks', route(async (req) => {
     const verse = int(req.body.verse);
     if (!(verse >= 1 && verse <= TOTAL_VERSES)) fail(400, 'bad_verse');
-    db.prepare('INSERT OR IGNORE INTO bookmarks (user_id, verse, created_at) VALUES (?, ?, ?)').run(req.user.id, verse, iso());
+    await db.run('INSERT OR IGNORE INTO bookmarks (user_id, verse, created_at) VALUES (?, ?, ?)', req.user.id, verse, iso());
     return { ok: true };
   }));
 
-  app.delete('/api/bookmarks/:verse', wrap((req) => {
-    db.prepare('DELETE FROM bookmarks WHERE user_id = ? AND verse = ?').run(req.user.id, int(req.params.verse));
+  app.delete('/api/bookmarks/:verse', route(async (req) => {
+    await db.run('DELETE FROM bookmarks WHERE user_id = ? AND verse = ?', req.user.id, int(req.params.verse));
     return { ok: true };
   }));
 
   // ---------- family dashboard ----------
-  app.get('/api/family/dashboard', wrap((req) => {
+  app.get('/api/family/dashboard', route(async (req) => {
     const fid = req.user.family_id;
-    const family = db.prepare('SELECT * FROM families WHERE id = ?').get(fid);
-    const members = db
-      .prepare(
-        `SELECT u.*, m.role, m.status, m.joined_at FROM family_memberships m JOIN users u ON u.id = m.user_id
-          WHERE m.family_id = ? ORDER BY m.sort_order, m.id`,
-      )
-      .all(fid);
+    const family = await db.get('SELECT * FROM families WHERE id = ?', fid);
+    const members = await db.all(
+      `SELECT u.*, m.role, m.status, m.joined_at FROM family_memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.family_id = ? ORDER BY m.sort_order, m.id`, fid);
     const t = now();
     const familyToday = localDate(family.timezone, t);
     const active = members.filter((m) => m.status === 'active');
-    const list = members.map((m) => {
+    const list = await Promise.all(members.map(async (m) => {
       if (m.status !== 'active') return { id: m.id, displayName: m.display_name, avatar: m.avatar, avatarColor: m.avatar_color, status: 'invited' };
-      const s = personalStats(db, m, m.joined_at, t);
+      const s = await personalStats(db, m, m.joined_at, t);
       return {
         id: m.id, displayName: m.display_name, avatar: m.avatar, avatarColor: m.avatar_color, status: 'active', role: m.role,
         doneToday: s.doneToday, portionPercent: s.portion.percent, position: s.position,
       };
-    });
+    }));
 
-    // Family history by family calendar day: how many members marked that day (each in their own zone).
+    // Family history by calendar day: how many members marked that day (each in their own zone).
     const since = addDays(familyToday, -34);
-    const counts = new Map(
-      db.prepare('SELECT local_date, COUNT(*) AS n FROM daily_completions WHERE family_id = ? AND local_date >= ? GROUP BY local_date').all(fid, since)
-        .map((r) => [r.local_date, r.n]),
-    );
+    const [countRows, totals, completionDays, together, cycles] = await Promise.all([
+      db.all('SELECT local_date, COUNT(*) AS n FROM daily_completions WHERE family_id = ? AND local_date >= ? GROUP BY local_date', fid, since),
+      db.get('SELECT COALESCE(SUM(p.total_verses_read), 0) AS verses FROM family_memberships m LEFT JOIN reading_progress p ON p.user_id = m.user_id WHERE m.family_id = ?', fid),
+      db.get('SELECT COUNT(*) AS n FROM daily_completions WHERE family_id = ?', fid),
+      db.get('SELECT COUNT(*) AS n FROM (SELECT local_date FROM daily_completions WHERE family_id = ? GROUP BY local_date HAVING COUNT(*) >= ?)', fid, Math.max(1, active.length)),
+      db.get('SELECT COALESCE(SUM(p.cycles_completed),0) AS n FROM family_memberships m JOIN reading_progress p ON p.user_id = m.user_id WHERE m.family_id = ?', fid),
+    ]);
+    const counts = new Map(countRows.map((r) => [r.local_date, r.n]));
     const days = (n) => Array.from({ length: n }, (_, i) => addDays(familyToday, i - n + 1)).map((d) => ({ date: d, count: counts.get(d) ?? 0 }));
-    const totals = db
-      .prepare(
-        `SELECT COUNT(*) AS days, COALESCE(SUM(p.total_verses_read), 0) AS verses FROM family_memberships m
-           LEFT JOIN reading_progress p ON p.user_id = m.user_id WHERE m.family_id = ?`,
-      )
-      .get(fid);
-    const completionDays = db.prepare('SELECT COUNT(*) AS n FROM daily_completions WHERE family_id = ?').get(fid).n;
-    const togetherDays = db
-      .prepare('SELECT COUNT(*) AS n FROM (SELECT local_date FROM daily_completions WHERE family_id = ? GROUP BY local_date HAVING COUNT(*) >= ?)')
-      .get(fid, Math.max(1, active.length)).n;
-    const cycles = db
-      .prepare('SELECT COALESCE(SUM(p.cycles_completed),0) AS n FROM family_memberships m JOIN reading_progress p ON p.user_id = m.user_id WHERE m.family_id = ?')
-      .get(fid).n;
 
     return {
       family: { name: family.name, timezone: family.timezone, today: familyToday },
@@ -436,73 +437,84 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
       today: { done: list.filter((m) => m.doneToday).length, active: active.length },
       week: days(7),
       month: days(30),
-      totals: { readingDays: completionDays, versesRead: totals.verses, daysAllTogether: togetherDays, surahCompletions: cycles },
+      totals: { readingDays: completionDays.n, versesRead: totals.verses, daysAllTogether: together.n, surahCompletions: cycles.n },
     };
   }));
 
   // ---------- administrator ----------
-  app.get('/api/admin/members', requireAdmin, wrap((req) => {
-    const rows = db
-      .prepare(
+  app.get('/api/admin/members', requireAdmin, route(async (req) => {
+    const [rows, f] = await Promise.all([
+      db.all(
         `SELECT u.id, u.display_name, u.login_name, u.avatar, u.avatar_color, m.role, m.status, m.joined_at,
                 (SELECT MAX(last_seen_at) FROM sessions s WHERE s.user_id = u.id) AS last_seen_at
-           FROM family_memberships m JOIN users u ON u.id = m.user_id WHERE m.family_id = ? ORDER BY m.sort_order, m.id`,
-      )
-      .all(req.user.family_id);
-    const f = db.prepare('SELECT max_members FROM families WHERE id = ?').get(req.user.family_id);
+           FROM family_memberships m JOIN users u ON u.id = m.user_id WHERE m.family_id = ? ORDER BY m.sort_order, m.id`, req.user.family_id),
+      db.get('SELECT max_members FROM families WHERE id = ?', req.user.family_id),
+    ]);
     return { members: rows, maxMembers: f.max_members };
   }));
 
-  app.post('/api/admin/members', requireAdmin, wrap((req) => {
+  app.post('/api/admin/members', requireAdmin, route(async (req) => {
     const displayName = str(req.body.displayName, 40);
     if (!displayName) fail(400, 'name_required');
     const fid = req.user.family_id;
-    const f = db.prepare('SELECT * FROM families WHERE id = ?').get(fid);
-    return tx(db, () => {
-      const n = db.prepare('SELECT COUNT(*) AS n FROM family_memberships WHERE family_id = ?').get(fid).n;
+    return db.tx(async (t) => {
+      const f = await t.get('SELECT * FROM families WHERE id = ?', fid);
+      const n = (await t.get('SELECT COUNT(*) AS n FROM family_memberships WHERE family_id = ?', fid)).n;
       if (n >= f.max_members) fail(409, 'family_full');
-      const color = AVATAR_COLORS[n % AVATAR_COLORS.length];
-      const u = db.prepare('INSERT INTO users (display_name, avatar_color, timezone, created_at) VALUES (?, ?, ?, ?)').run(displayName, color, f.timezone, iso());
-      const uid = Number(u.lastInsertRowid);
-      db.prepare("INSERT INTO family_memberships (family_id, user_id, role, status, sort_order) VALUES (?, ?, 'member', 'invited', ?)").run(fid, uid, n);
-      return { userId: uid, invite: createInvite(fid, uid, 'join') };
+      const order = (await t.get('SELECT COALESCE(MAX(sort_order), -1) + 1 AS o FROM family_memberships WHERE family_id = ?', fid)).o;
+      const u = await t.run('INSERT INTO users (display_name, avatar_color, timezone, created_at) VALUES (?, ?, ?, ?)',
+        displayName, AVATAR_COLORS[order % AVATAR_COLORS.length], f.timezone, iso());
+      await t.run("INSERT INTO family_memberships (family_id, user_id, role, status, sort_order) VALUES (?, ?, 'member', 'invited', ?)", fid, u.lastInsertRowid, order);
+      return { userId: u.lastInsertRowid, invite: await createInvite(t, fid, u.lastInsertRowid, 'join') };
     });
   }));
 
-  app.patch('/api/admin/members/:id', requireAdmin, wrap((req) => {
-    const m = memberOfMyFamily(req, int(req.params.id));
+  app.patch('/api/admin/members/:id', requireAdmin, route(async (req) => {
+    const m = await memberOfMyFamily(req, int(req.params.id));
     if (req.body.displayName !== undefined) {
       const name = str(req.body.displayName, 40);
       if (!name) fail(400, 'name_required');
-      db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(name, m.user_id);
+      await db.run('UPDATE users SET display_name = ? WHERE id = ?', name, m.user_id);
     }
     if (req.body.role !== undefined) {
       if (!['admin', 'member'].includes(req.body.role)) fail(400, 'bad_role');
       if (m.user_id === req.user.id && req.body.role !== 'admin') fail(409, 'last_admin');
-      db.prepare('UPDATE family_memberships SET role = ? WHERE id = ?').run(req.body.role, m.id);
+      await db.run('UPDATE family_memberships SET role = ? WHERE id = ?', req.body.role, m.id);
     }
     return { ok: true };
   }));
 
-  app.post('/api/admin/members/:id/invite', requireAdmin, wrap((req) => {
-    const m = memberOfMyFamily(req, int(req.params.id));
-    return { invite: createInvite(req.user.family_id, m.user_id, m.status === 'active' ? 'reset' : 'join') };
+  app.post('/api/admin/members/:id/invite', requireAdmin, route(async (req) => {
+    const m = await memberOfMyFamily(req, int(req.params.id));
+    return { invite: await createInvite(db, req.user.family_id, m.user_id, m.status === 'active' ? 'reset' : 'join') };
   }));
 
-  app.delete('/api/admin/members/:id', requireAdmin, wrap((req) => {
-    const m = memberOfMyFamily(req, int(req.params.id));
+  app.delete('/api/admin/members/:id', requireAdmin, route(async (req) => {
+    const m = await memberOfMyFamily(req, int(req.params.id));
     if (m.user_id === req.user.id) fail(409, 'cannot_remove_self');
-    db.prepare('DELETE FROM users WHERE id = ?').run(m.user_id);
+    await deleteUserData(db, m.user_id);
     return { ok: true };
   }));
 
-  app.patch('/api/admin/family', requireAdmin, wrap((req) => {
-    const f = db.prepare('SELECT * FROM families WHERE id = ?').get(req.user.family_id);
+  app.patch('/api/admin/family', requireAdmin, route(async (req) => {
+    const f = await db.get('SELECT * FROM families WHERE id = ?', req.user.family_id);
     const name = req.body.name !== undefined ? str(req.body.name) : f.name;
     if (!name) fail(400, 'name_required');
     const tz = req.body.timezone !== undefined ? (isValidTimeZone(req.body.timezone) ? req.body.timezone : fail(400, 'bad_timezone')) : f.timezone;
-    db.prepare('UPDATE families SET name = ?, timezone = ? WHERE id = ?').run(name, tz, f.id);
+    await db.run('UPDATE families SET name = ?, timezone = ? WHERE id = ?', name, tz, f.id);
     return { ok: true };
+  }));
+
+  /** Family backup for safekeeping: everyone's reading data, never PINs or session tokens. */
+  app.get('/api/admin/backup', requireAdmin, route(async (req, res) => {
+    const fid = req.user.family_id;
+    const family = await db.get('SELECT name, timezone, created_at FROM families WHERE id = ?', fid);
+    const members = await db.all(
+      `SELECT u.*, m.role, m.status, m.joined_at FROM family_memberships m JOIN users u ON u.id = m.user_id
+        WHERE m.family_id = ? ORDER BY m.sort_order, m.id`, fid);
+    const people = await Promise.all(members.map(async (m) => ({ role: m.role, status: m.status, joinedAt: m.joined_at, ...(await personalExport(m)) })));
+    res.set('Content-Disposition', `attachment; filename="family-backup-${localDate(req.user.timezone, now())}.json"`);
+    return { backupOf: 'Baqarah Together', exportedAt: iso(), family, members: people };
   }));
 
   app.use('/api', (req, res) => res.status(404).json({ error: 'not_found' }));

@@ -1,0 +1,21 @@
+# Render Blueprint: one free web service. The family's data lives in a free Turso database,
+# because free Render services do not keep files between restarts.
+services:
+  - type: web
+    name: baqarah-together
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: node server/index.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL          # libsql://<your-database>.turso.io
+        sync: false
+      - key: DATABASE_AUTH_TOKEN   # token from Turso
+        sync: false
+      - key: SETUP_CODE            # random code; find it under Environment in Render, use it once at /setup
+        generateValue: true

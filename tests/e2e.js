@@ -18,8 +18,8 @@ let server, browser, base, dir;
 before(async () => {
   dir = mkdtempSync(path.join(tmpdir(), 'baqara-e2e-'));
   const dbFile = path.join(dir, 'e2e.db');
-  execFileSync(process.execPath, ['scripts/seed-demo.js'], { env: { ...process.env, DB_FILE: dbFile }, stdio: 'ignore' });
-  const app = createApp({ db: openDb(dbFile), serveClient: true });
+  execFileSync(process.execPath, ['scripts/seed-demo.js'], { env: { ...process.env, DATABASE_URL: `file:${dbFile}` }, stdio: 'ignore' });
+  const app = createApp({ db: await openDb(`file:${dbFile}`), serveClient: true });
   await new Promise((r) => { server = app.listen(0, r); });
   base = `http://localhost:${server.address().port}`;
   browser = await chromium.launch();

@@ -7,7 +7,7 @@ RUN npm run build && npm prune --omit=dev
 
 FROM node:22-alpine
 WORKDIR /app
-ENV NODE_ENV=production PORT=3000 DB_FILE=/data/baqara.db
+ENV NODE_ENV=production PORT=3000 DATABASE_URL=file:/data/baqara.db
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./

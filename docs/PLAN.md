@@ -6,7 +6,7 @@ A private, mobile-first web app that helps one family of six read Surah Al-Baqar
 
 | Question | Decision |
 |---|---|
-| Hosting | Not decided yet → built **portable**: one Node.js process + one SQLite file, Docker-ready. Runs on Render, Fly.io, Railway, a VPS or a home server. |
+| Hosting | **Free**: Render free web service + Turso free database (SQLite-compatible). Free web hosts don't keep files, so data lives in Turso. Still portable: a local SQLite file or Docker also works. See [DEPLOY-FREE.md](DEPLOY-FREE.md). |
 | Sign-in | **Invite link + 4–6 digit PIN** (administrator: 6 digits). |
 | Interface language | **English and Arabic**, chosen per person; Arabic uses a full right-to-left layout. |
 | Reminders | **Web push** (installable app). Planned for phase 2; the database tables already exist. |
@@ -18,18 +18,18 @@ A private, mobile-first web app that helps one family of six read Surah Al-Baqar
    React 19 single-page app  ── fonts self-hosted (Amiri Quran, Noto Naskh Arabic)
         │  same-origin HTTPS, httpOnly session cookie, X-Requested-With header
         ▼
- Node.js 22 + Express  (server/app.js)
+ Node.js 20+ + Express  (server/app.js)  — on Render's free plan
    • auth: scrypt PIN hashes, hashed session tokens, lockout, CSRF guard, strict CSP (helmet)
    • every query scoped to the signed-in member's family_id
    • time-zone aware "today" per member (Intl API, IANA zones)
         │
         ▼
- SQLite (node:sqlite, WAL)  — one file, easy to back up
+ Turso (hosted SQLite, free plan) via @libsql/client — or a local SQLite file for development/self-hosting
  data/al-baqarah.json       — verified Quran text, served read-only to signed-in members
 ```
 
 * **No runtime third-party calls.** The Quran text is stored in the repository (verified, with checksum) so the app keeps working if an external API is down, and nothing about the family leaks to outside services.
-* **No API keys needed** for the current version. Phase-2 web push needs a VAPID key pair, generated once and kept in server environment variables only.
+* **Only secret:** the Turso database URL and token, stored in Render's environment settings (never in the code or the browser). Phase-2 web push needs a VAPID key pair, generated once and kept in server environment variables only.
 
 ## 2. Main user flows
 
@@ -77,7 +77,8 @@ Full DDL: [`server/schema.sql`](../server/schema.sql). `*_date` columns are loca
 
 | Needed now | Purpose |
 |---|---|
-| A host that runs Node 22 or Docker, with HTTPS and a persistent disk | runs the app and stores the SQLite file |
+| Render (free web service) | runs the app, HTTPS address; sleeps after 15 idle minutes (wakes in up to ~1 min) |
+| Turso (free database) | stores the family's data; needs a URL + token kept only in Render's environment settings |
 
 | Optional / later | Purpose |
 |---|---|

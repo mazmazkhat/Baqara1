@@ -24,7 +24,7 @@ Coming next: reminders (web push), audio recitation, translations, reflections, 
 
 ## Run it locally
 
-Requires **Node.js 22.13+** (uses the built-in `node:sqlite`).
+Requires **Node.js 20+**. Data is stored in a local SQLite file by default (`var/baqara.db`), or in Turso when `DATABASE_URL` is set.
 
 ```bash
 npm install
@@ -40,13 +40,17 @@ For development with hot reload: `node --watch server/index.js` in one terminal 
 ## Use it for your real family
 
 1. Deploy with an **empty** database (don't run `seed:demo`).
-2. On first start, the server log prints: `First-time setup: open /setup and enter setup code 123456789012`. You can also set `SETUP_CODE` yourself.
+2. On first start, the server log prints (on Render, use the SETUP_CODE shown under Environment): `First-time setup: open /setup and enter setup code 123456789012`. You can also set `SETUP_CODE` yourself.
 3. Open `https://your-domain/setup`, create the family and your administrator account.
 4. Settings → **Family administration** → add each person and send them their invite link.
 
-To replace the demo with real people, delete `var/baqara.db` (or the Docker volume) and follow the steps above.
+To replace the demo with real people, delete `var/baqara.db` (or the Docker volume) and follow the steps above. The demo data is only ever written to a local file, never to Turso.
 
 ## Deploy
+
+**Free hosting (recommended):** Render (free web service) + Turso (free database). Step-by-step guide: **[docs/DEPLOY-FREE.md](docs/DEPLOY-FREE.md)**. The `render.yaml` blueprint sets almost everything up.
+
+**Your own server or Docker:**
 
 ```bash
 docker build -t baqarah .
@@ -54,13 +58,13 @@ docker run -p 3000:3000 -v baqarah-data:/data baqarah
 ```
 
 * Put it behind **HTTPS** (most hosts do this automatically). In production, cookies are marked `Secure` and the browser is told to always use HTTPS.
-* Environment: `PORT` (3000), `DB_FILE` (`/data/baqara.db` in Docker), `SETUP_CODE` (optional).
-* Back up the single database file (and its `-wal` file) regularly.
+* Environment: `PORT` (3000), `DATABASE_URL` (`file:/data/baqara.db` in Docker, or `libsql://…` for Turso), `DATABASE_AUTH_TOKEN` (Turso only), `SETUP_CODE` (optional).
+* Back up regularly: Settings → Family administration → **Download family backup**, or copy the database file.
 
 ## Tests
 
 ```bash
-npm test            # 34 API tests: auth, invitations, 6-member cap, permissions, isolation, progress, time zones, errors
+npm test            # 37 API tests: auth, invitations, 6-member cap, permissions, isolation, progress, time zones, errors
 npm run build && npm run test:e2e   # 9 browser tests (Playwright/Chromium): exact Arabic text, autosave, completion, invites, RTL, dark mode, responsive
 npm run verify:quran  # checksum of the stored Quran text
 ```
