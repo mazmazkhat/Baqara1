@@ -1,0 +1,8 @@
+node_modules/
+dist/
+var/
+*.db
+*.db-wal
+*.db-shm
+test-results/
+.DS_Store
