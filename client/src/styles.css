@@ -261,3 +261,47 @@ dialog::backdrop { background: rgb(0 0 0 / 35%); }
 .emojis { display: flex; gap: 6px; flex-wrap: wrap; }
 .emojis button { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; font-size: 20px; }
 .emojis button[aria-pressed='true'] { border: 2px solid var(--green); background: var(--green-soft); }
+
+/* ---------- family parts ---------- */
+.choice.part-choice { align-items: center; }
+.choice.part-choice.taken { opacity: 0.6; cursor: default; }
+.choice.part-choice input { margin-top: 0; }
+.choice-extra { margin: -2px 0 12px; padding-inline-start: 32px; }
+.choice-extra .choice { margin-bottom: 6px; }
+.pages-strip { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; margin: 12px 0 4px; direction: ltr; }
+[dir='rtl'] .pages-strip { direction: rtl; }
+.pages-strip i { aspect-ratio: 1 / 1.35; border-radius: 3px; background: var(--surface-2); outline: 1px solid var(--line); outline-offset: -1px; }
+.pages-strip i.read { background: var(--green); outline-color: transparent; }
+.part-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.part-row:first-of-type { border-top: 0; }
+.part-row .info { flex: 1; min-width: 0; }
+.part-row .avatar.empty { background: var(--surface-2); color: var(--ink-soft); border: 1px dashed var(--line); }
+
+/* ---------- full page (mushaf) view ---------- */
+.btn.icon.on { background: var(--green-soft); border-color: var(--green); color: var(--green); }
+.mushaf-wrap { padding-top: 16px; touch-action: pan-y; }
+.mushaf-page {
+  background: var(--surface); border: 1px solid var(--gold-ornament); border-radius: 14px; padding: 14px 16px 10px;
+  box-shadow: inset 0 0 0 4px var(--surface), inset 0 0 0 5px color-mix(in srgb, var(--gold-ornament) 45%, transparent), var(--shadow);
+}
+.mushaf-page.mine { border-color: var(--green); }
+.mushaf-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13.5px; color: var(--ink-soft); border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.mushaf-head [lang='ar'] { font-family: var(--quran-font); font-size: 17px; color: var(--green); }
+.mushaf-opening { text-align: center; padding-top: 12px; }
+.mushaf-opening .surah-frame { padding: 6px; }
+.mushaf-opening .ar-title { font-size: 28px; }
+.mushaf-text {
+  font-family: var(--quran-font); font-size: var(--quran-size); line-height: 2.15; color: var(--ink);
+  text-align: justify; text-align-last: center; padding: 10px 0 4px; word-spacing: 0.04em;
+}
+.ayah-inline { cursor: pointer; border-radius: 8px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.ayah-inline:hover { background: color-mix(in srgb, var(--green-soft) 55%, transparent); }
+.ayah-inline.selected { background: var(--green-soft); }
+.ayah-inline.place .num { text-decoration: underline 2px var(--gold-ornament); text-underline-offset: 6px; }
+.ayah-inline.marked .num { color: var(--green); }
+.ayah-inline .num { color: var(--gold); white-space: nowrap; }
+.mushaf-foot { text-align: center; color: var(--ink-soft); font-family: var(--quran-font); font-size: 18px; border-top: 1px solid var(--line); padding-top: 4px; margin-top: 4px; }
+.page-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 0 0; direction: ltr; }
+.page-nav .btn { min-width: 0; padding: 8px 12px; }
+.page-nav .btn span { white-space: nowrap; }
+@media (max-width: 380px) { .page-nav .btn span { display: none; } }

@@ -1,6 +1,6 @@
 import express from 'express';
 import helmet from 'helmet';
-import { readFileSync, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { deleteUserData } from './db.js';
@@ -10,11 +10,11 @@ import {
 } from './auth.js';
 import { isValidTimeZone, localDate, addDays } from './time.js';
 import {
-  TOTAL_VERSES, getPlan, getProgress, saveProgress, markComplete, undoComplete, personalStats, todayPortion,
+  TOTAL_VERSES, getPlan, getProgress, saveProgress, markComplete, undoComplete, personalStats, todayPortion, planStartVerse, coverage,
 } from './reading.js';
+import { QURAN, PARTS, partByNumber, partOfPlan } from './quran.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const QURAN = JSON.parse(readFileSync(path.join(ROOT, 'data', 'al-baqarah.json'), 'utf8'));
 const INVITE_DAYS = 7;
 const AVATAR_COLORS = ['green', 'navy', 'gold', 'teal', 'rose', 'plum'];
 const AVATARS = ['', '🌙', '⭐', '🌿', '🌸', '🕊️', '🌳', '☀️', '💧', '📖', '🌷', '🍃'];
@@ -157,7 +157,7 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
   function publicUser(u) {
     return {
       id: u.id, displayName: u.display_name, loginName: u.login_name, avatar: u.avatar, avatarColor: u.avatar_color,
-      locale: u.locale, timezone: u.timezone, theme: u.theme, fontScale: u.font_scale, role: u.role,
+      locale: u.locale, timezone: u.timezone, theme: u.theme, fontScale: u.font_scale, role: u.role, readerLayout: u.reader_layout || 'list',
     };
   }
 
@@ -284,13 +284,14 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     const locale = b.locale !== undefined ? (['en', 'ar'].includes(b.locale) ? b.locale : fail(400, 'bad_locale')) : u.locale;
     const theme = b.theme !== undefined ? (['system', 'light', 'dark'].includes(b.theme) ? b.theme : fail(400, 'bad_theme')) : u.theme;
     const timezone = b.timezone !== undefined ? (isValidTimeZone(b.timezone) ? b.timezone : fail(400, 'bad_timezone')) : u.timezone;
+    const readerLayout = b.readerLayout !== undefined ? (['list', 'page'].includes(b.readerLayout) ? b.readerLayout : fail(400, 'bad_layout')) : u.reader_layout || 'list';
     let fontScale = u.font_scale;
     if (b.fontScale !== undefined) {
       fontScale = Number(b.fontScale);
       if (!(fontScale >= 0.8 && fontScale <= 2.2)) fail(400, 'bad_font_scale');
     }
-    await db.run('UPDATE users SET display_name = ?, avatar = ?, avatar_color = ?, locale = ?, theme = ?, timezone = ?, font_scale = ? WHERE id = ?',
-      displayName, avatar, avatarColor, locale, theme, timezone, fontScale, u.id);
+    await db.run('UPDATE users SET display_name = ?, avatar = ?, avatar_color = ?, locale = ?, theme = ?, timezone = ?, font_scale = ?, reader_layout = ? WHERE id = ?',
+      displayName, avatar, avatarColor, locale, theme, timezone, fontScale, readerLayout, u.id);
     return { ok: true };
   }));
 
@@ -349,17 +350,57 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
 
   app.put('/api/plan', route(async (req) => {
     const type = req.body.planType;
-    if (!['free', 'whole', 'verses', 'days'].includes(type)) fail(400, 'bad_plan');
+    if (!['free', 'whole', 'verses', 'days', 'pages'].includes(type)) fail(400, 'bad_plan');
     const vpd = type === 'verses' ? int(req.body.versesPerDay) : null;
     const days = type === 'days' ? int(req.body.daysTotal) : null;
+    const part = type === 'pages' ? partByNumber(int(req.body.part)) : null;
     if (type === 'verses' && !(vpd >= 1 && vpd <= TOTAL_VERSES)) fail(400, 'bad_plan');
     if (type === 'days' && !(days >= 1 && days <= 365)) fail(400, 'bad_plan');
-    await db.run(
-      `INSERT INTO reading_plans (user_id, plan_type, verses_per_day, days_total, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET plan_type = excluded.plan_type, verses_per_day = excluded.verses_per_day,
-         days_total = excluded.days_total, updated_at = excluded.updated_at`,
-      req.user.id, type, vpd, days, iso());
+    if (type === 'pages' && !part) fail(400, 'bad_part');
+    const plan = { plan_type: type, verses_per_day: vpd, days_total: days, page_from: part?.pageFrom ?? null, page_to: part?.pageTo ?? null };
+    await db.tx(async (t) => {
+      if (part) {
+        // One part per person: refuse a part someone else in the family already has.
+        const owner = await t.get(
+          `SELECT u.display_name FROM reading_plans p JOIN family_memberships m ON m.user_id = p.user_id JOIN users u ON u.id = p.user_id
+            WHERE m.family_id = ? AND p.user_id != ? AND p.plan_type = 'pages' AND p.page_from = ?`,
+          req.user.family_id, req.user.id, part.pageFrom);
+        if (owner) fail(409, 'part_taken');
+      }
+      await t.run(
+        `INSERT INTO reading_plans (user_id, plan_type, verses_per_day, days_total, page_from, page_to, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET plan_type = excluded.plan_type, verses_per_day = excluded.verses_per_day,
+           days_total = excluded.days_total, page_from = excluded.page_from, page_to = excluded.page_to, updated_at = excluded.updated_at`,
+        req.user.id, type, vpd, days, plan.page_from, plan.page_to, iso());
+      // Start the new plan from its own beginning (a family part always starts at its first verse).
+      const p = await getProgress(t, req.user.id, iso());
+      const start = planStartVerse(plan, p.current_verse);
+      await t.run('UPDATE reading_progress SET cycle_start_verse = ?, current_verse = ?, furthest_verse = ?, updated_at = ? WHERE user_id = ?',
+        start, start, start - 1, iso(), req.user.id);
+    });
     return { ok: true };
+  }));
+
+  /** The six fixed parts and who has chosen each one. */
+  async function familyParts(fid, familyToday) {
+    const rows = await db.all(
+      `SELECT u.id, u.display_name, u.avatar, u.avatar_color, u.timezone, p.page_from, p.page_to
+         FROM reading_plans p JOIN family_memberships m ON m.user_id = p.user_id JOIN users u ON u.id = p.user_id
+        WHERE m.family_id = ? AND m.status = 'active' AND p.plan_type = 'pages'`, fid);
+    const done = new Set((await db.all('SELECT user_id FROM daily_completions WHERE family_id = ? AND local_date = ?', fid, familyToday)).map((r) => r.user_id));
+    return PARTS.map((part) => {
+      const o = rows.find((r) => r.page_from === part.pageFrom && r.page_to === part.pageTo);
+      return {
+        ...part,
+        pages: part.pageTo - part.pageFrom + 1,
+        owner: o ? { id: o.id, displayName: o.display_name, avatar: o.avatar, avatarColor: o.avatar_color, doneToday: done.has(o.id) } : null,
+      };
+    });
+  }
+
+  app.get('/api/family/parts', route(async (req) => {
+    const f = await db.get('SELECT timezone FROM families WHERE id = ?', req.user.family_id);
+    return { parts: await familyParts(req.user.family_id, localDate(f.timezone, now())) };
   }));
 
   app.post('/api/completions/today', route(async (req) => {
@@ -429,6 +470,13 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
       db.get('SELECT COALESCE(SUM(p.cycles_completed),0) AS n FROM family_memberships m JOIN reading_progress p ON p.user_id = m.user_id WHERE m.family_id = ?', fid),
     ]);
     const counts = new Map(countRows.map((r) => [r.local_date, r.n]));
+    // Shared reading: which of the 48 pages the family has read today, and days the whole Surah was completed together.
+    const allRows = await db.all('SELECT local_date, from_verse, to_verse FROM daily_completions WHERE family_id = ?', fid);
+    const byDate = new Map();
+    for (const r of allRows) (byDate.get(r.local_date) ?? byDate.set(r.local_date, []).get(r.local_date)).push(r);
+    const todayCov = coverage(byDate.get(familyToday) ?? []);
+    const wholeDates = [...byDate.entries()].filter(([, rows]) => coverage(rows).wholeSurah).map(([d]) => d);
+    const parts = await familyParts(fid, familyToday);
     const days = (n) => Array.from({ length: n }, (_, i) => addDays(familyToday, i - n + 1)).map((d) => ({ date: d, count: counts.get(d) ?? 0 }));
 
     return {
@@ -437,6 +485,14 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
       today: { done: list.filter((m) => m.doneToday).length, active: active.length },
       week: days(7),
       month: days(30),
+      shared: {
+        parts,
+        totalPages: 48,
+        pagesReadToday: todayCov.pagesRead,
+        wholeSurahToday: todayCov.wholeSurah,
+        wholeSurahDays: wholeDates.length,
+        wholeSurahThisWeek: days(7).map((d) => ({ date: d.date, whole: wholeDates.includes(d.date) })),
+      },
       totals: { readingDays: completionDays.n, versesRead: totals.verses, daysAllTogether: together.n, surahCompletions: cycles.n },
     };
   }));

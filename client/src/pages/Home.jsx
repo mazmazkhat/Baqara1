@@ -25,7 +25,9 @@ export default function Home() {
       <section className="card accent" aria-labelledby="today-h">
         <h2 id="today-h">{t('todays_reading')}</h2>
         <p className="muted" style={{ marginTop: 0 }}>{s.doneToday ? t('done_today') : t('not_yet_today')}</p>
-        {partial && <p className="small" style={{ margin: '0 0 8px' }}><b>{t('verses_range', { from: s.portion.from, to: s.portion.to })}</b></p>}
+        {s.part ? (
+          <p className="small" style={{ margin: '0 0 8px' }}><b>{t('your_part_line', { n: s.part, from: s.portion.pageFrom, to: s.portion.pageTo })}</b> <span className="muted">· {t('verses_range', { from: s.portion.from, to: s.portion.to })}</span></p>
+        ) : partial && <p className="small" style={{ margin: '0 0 8px' }}><b>{t('verses_range', { from: s.portion.from, to: s.portion.to })}</b></p>}
         <div className="row between small muted"><span>{partial ? t('portion_progress') : t('surah_progress')}</span><span>{t.num(partial ? s.portion.percent : s.surahPercent)}%</span></div>
         <Bar value={partial ? s.portion.percent : s.surahPercent} label={t('portion_progress')} />
         <div className="stack" style={{ marginTop: 16 }}>
@@ -33,6 +35,14 @@ export default function Home() {
           <CompleteButton />
         </div>
       </section>
+
+      {!s.part && (
+        <section className="card">
+          <h2>{t('choose_part')}</h2>
+          <p className="muted" style={{ marginTop: 0 }}>{t('choose_part_prompt')}</p>
+          <Link className="btn block" to="/settings#plan">{t('choose_part')}</Link>
+        </section>
+      )}
 
       <section className="card" aria-labelledby="fam-h">
         <div className="row between"><h2 id="fam-h" style={{ margin: 0 }}>{t('family_today')}</h2><Link to="/family" className="small">{t('nav_family')} →</Link></div>

@@ -12,3 +12,7 @@ export const IMinus = () => <svg {...P}><path d="M5 12h14" /></svg>;
 export const IPlus = () => <svg {...P}><path d="M12 5v14M5 12h14" /></svg>;
 export const IPin = () => <svg {...P}><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21Z" /><circle cx="12" cy="9.5" r="2.5" /></svg>;
 export const IShare = () => <svg {...P}><path d="M12 15V3M8 7l4-4 4 4" /><path d="M5 12v8h14v-8" /></svg>;
+export const IPage = () => <svg {...P}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8.5 7.5h7M8.5 11h7M8.5 14.5h7M8.5 18h4" /></svg>;
+export const IList = () => <svg {...P}><path d="M9 6h11M9 12h11M9 18h11" /><circle cx="4.5" cy="6" r="1" /><circle cx="4.5" cy="12" r="1" /><circle cx="4.5" cy="18" r="1" /></svg>;
+export const IChevL = () => <svg {...P}><path d="m15 5-7 7 7 7" /></svg>;
+export const IChevR = () => <svg {...P}><path d="m9 5 7 7-7 7" /></svg>;

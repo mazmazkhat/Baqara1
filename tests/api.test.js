@@ -429,3 +429,102 @@ describe('reading progress, completion and time zones', () => {
     assert.equal(r.body.error, 'bad_json');
   });
 });
+
+describe('family parts (fixed 6-6-9-9-9-9 page split) and page view', () => {
+  let app, admin, a, b;
+  before(async () => {
+    setClock('2026-12-10T12:00:00Z');
+    ({ app } = await makeApp());
+    admin = await setupFamily(app);
+    a = (await inviteAndJoin(app, admin, 'Maryam', 'maryam')).agent;
+    b = (await inviteAndJoin(app, admin, 'Ibrahim', 'ibrahim')).agent;
+  });
+
+  test('the six parts cover pages 2-49 as 6,6,9,9,9,9 pages', async () => {
+    const { parts } = (await a.get('/api/family/parts')).body;
+    assert.deepEqual(parts.map((p) => [p.pageFrom, p.pageTo, p.pages]), [[2, 7, 6], [8, 13, 6], [14, 22, 9], [23, 31, 9], [32, 40, 9], [41, 49, 9]]);
+    assert.equal(parts[0].from, 1);
+    assert.equal(parts[5].to, 286);
+    for (let i = 1; i < 6; i++) assert.equal(parts[i].from, parts[i - 1].to + 1, 'no gaps or overlaps');
+    assert.ok(parts.every((p) => p.owner === null));
+  });
+
+  test('choosing a part sets today\'s portion to those pages; a part belongs to one person', async () => {
+    assert.equal((await put(a, '/api/plan', { planType: 'pages', part: 2 })).status, 200);
+    const p = (await a.get('/api/progress')).body;
+    assert.deepEqual([p.portion.from, p.portion.to, p.portion.pageFrom, p.portion.pageTo, p.position], [49, 88, 8, 13, 49]);
+    assert.equal((await a.get('/api/me')).body.stats.part, 2);
+    const taken = await put(b, '/api/plan', { planType: 'pages', part: 2 });
+    assert.equal(taken.status, 409);
+    assert.equal(taken.body.error, 'part_taken');
+    assert.equal((await put(b, '/api/plan', { planType: 'pages', part: 7 })).body.error, 'bad_part');
+    assert.equal((await put(a, '/api/plan', { planType: 'pages', part: 2 })).status, 200, 'keeping my own part is fine');
+    const { parts } = (await b.get('/api/family/parts')).body;
+    assert.equal(parts[1].owner.displayName, 'Maryam');
+  });
+
+  test('completing a part records exactly its verses and stays on the same part tomorrow', async () => {
+    await put(a, '/api/progress', { verse: 60, seen: 70 });
+    const r = await post(a, '/api/completions/today', {});
+    assert.deepEqual([r.body.completion.from_verse, r.body.completion.to_verse], [49, 88]);
+    setClock('2026-12-11T12:00:00Z');
+    const p = (await a.get('/api/progress')).body;
+    assert.deepEqual([p.portion.from, p.portion.to, p.position, p.portion.percent], [49, 88, 49, 0]);
+  });
+
+  test('dashboard shows pages read today and celebrates when the whole Surah is read together', async () => {
+    // Admin takes parts 1 and 3-6 is not allowed (one part each), so use a "whole Surah" reader to fill the rest.
+    await put(b, '/api/plan', { planType: 'pages', part: 1 });
+    await post(a, '/api/completions/today', {});
+    await post(b, '/api/completions/today', {});
+    let d = (await admin.get('/api/family/dashboard')).body.shared;
+    assert.deepEqual(d.pagesReadToday, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    assert.equal(d.wholeSurahToday, false);
+    assert.equal(d.parts[0].owner.doneToday, true);
+    assert.equal(d.parts[2].owner, null);
+    await put(admin, '/api/plan', { planType: 'whole' });
+    await put(admin, '/api/progress', { verse: 280, seen: 286 });
+    await post(admin, '/api/completions/today', {});
+    d = (await admin.get('/api/family/dashboard')).body.shared;
+    assert.equal(d.pagesReadToday.length, 48);
+    assert.equal(d.wholeSurahToday, true);
+    assert.equal(d.wholeSurahDays, 1);
+  });
+
+  test('removing a member frees their part', async () => {
+    const m = await inviteAndJoin(app, admin, 'Aisha', 'aisha');
+    await put(m.agent, '/api/plan', { planType: 'pages', part: 4 });
+    await del(admin, `/api/admin/members/${m.userId}`);
+    assert.equal((await put(a, '/api/plan', { planType: 'pages', part: 4 })).status, 200);
+  });
+
+  test('reader layout preference (verse list or full page) is saved', async () => {
+    assert.equal((await a.get('/api/me')).body.user.readerLayout, 'list');
+    assert.equal((await patch(a, '/api/me', { readerLayout: 'page' })).status, 200);
+    assert.equal((await a.get('/api/me')).body.user.readerLayout, 'page');
+    assert.equal((await patch(a, '/api/me', { readerLayout: 'scroll' })).status, 400);
+  });
+});
+
+describe('upgrading an existing database', () => {
+  test('an older reading_plans table is rebuilt to allow family parts, keeping existing plans', async () => {
+    const { createClient } = await import('@libsql/client');
+    const file = path.join(TMP, 'old.db');
+    const c = createClient({ url: `file:${file}` });
+    await c.executeMultiple(`
+      CREATE TABLE users (id INTEGER PRIMARY KEY, display_name TEXT NOT NULL, login_name TEXT UNIQUE, pin_hash TEXT, avatar TEXT NOT NULL DEFAULT '',
+        avatar_color TEXT NOT NULL DEFAULT 'green', locale TEXT NOT NULL DEFAULT 'en', timezone TEXT NOT NULL DEFAULT 'UTC', theme TEXT NOT NULL DEFAULT 'system',
+        font_scale REAL NOT NULL DEFAULT 1.0, failed_logins INTEGER NOT NULL DEFAULT 0, locked_until TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE reading_plans (user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        plan_type TEXT NOT NULL DEFAULT 'free' CHECK (plan_type IN ('free','whole','verses','days')), verses_per_day INTEGER, days_total INTEGER, updated_at TEXT NOT NULL);
+      INSERT INTO users (id, display_name, created_at) VALUES (1, 'Old', 'x');
+      INSERT INTO reading_plans VALUES (1, 'verses', 15, NULL, 'x');`);
+    c.close();
+    const db = await openDb(`file:${file}`);
+    assert.deepEqual(await db.get('SELECT plan_type, verses_per_day FROM reading_plans WHERE user_id = 1'), { plan_type: 'verses', verses_per_day: 15 });
+    await db.run("UPDATE reading_plans SET plan_type = 'pages', page_from = 2, page_to = 7 WHERE user_id = 1");
+    assert.equal((await db.get('SELECT reader_layout FROM users WHERE id = 1')).reader_layout, 'list');
+    // Opening again is a no-op.
+    await openDb(`file:${file}`);
+  });
+});

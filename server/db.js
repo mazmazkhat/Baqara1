@@ -73,6 +73,20 @@ export async function openDb(url = process.env.DATABASE_URL || 'file:var/baqara.
   // Columns added after the first release (CREATE TABLE IF NOT EXISTS does not add them to old tables).
   const cols = (await client.execute("SELECT name FROM pragma_table_info('daily_completions')")).rows.map((r) => r.name);
   if (!cols.includes('prev_state')) await client.execute('ALTER TABLE daily_completions ADD COLUMN prev_state TEXT');
+  const userCols = (await client.execute("SELECT name FROM pragma_table_info('users')")).rows.map((r) => r.name);
+  if (!userCols.includes('reader_layout')) await client.execute("ALTER TABLE users ADD COLUMN reader_layout TEXT NOT NULL DEFAULT 'list'");
+  // reading_plans gained the 'pages' plan type: SQLite cannot change a CHECK rule in place, so rebuild the table.
+  const plansSql = (await client.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'reading_plans'")).rows[0]?.sql || '';
+  if (!plansSql.includes("'pages'")) {
+    const create = schemaStatements(true).find((x) => /CREATE TABLE IF NOT EXISTS reading_plans/.test(x));
+    await client.batch([
+      'ALTER TABLE reading_plans RENAME TO reading_plans_old',
+      create,
+      `INSERT INTO reading_plans (user_id, plan_type, verses_per_day, days_total, updated_at)
+         SELECT user_id, plan_type, verses_per_day, days_total, updated_at FROM reading_plans_old`,
+      'DROP TABLE reading_plans_old',
+    ], 'write');
+  }
   return new Db(client);
 }
 

@@ -14,9 +14,11 @@ Plan, architecture, flows, schema and sources: **[docs/PLAN.md](docs/PLAN.md)**
 
 * Private family group: administrator + up to 5 invited members; one-time invite links; PIN sign-in; PIN reset links.
 * Reader with verified Uthmani Arabic text (Tanzil, used verbatim), verse ornaments, page/juz markers, adjustable text size, light/dark mode, bookmarks, automatic saving of your place, and "continue from where I stopped".
-* Reading paces: at my own pace (default), whole Surah daily, N verses per day, or finish over N days.
+* **Family parts:** Al-Baqarah is split into six fixed parts of 6, 6, 9, 9, 9 and 9 pages (mushaf pages 2–49). Each person chooses one part and reads it daily, so the family completes the whole Surah together every day. A part belongs to one person.
+* **Full page view:** switch the reader between verse-by-verse and one framed mushaf page at a time (swipe or buttons, Arabic page-turning direction). The choice is remembered.
+* Other reading paces: at my own pace, whole Surah daily, N verses per day, or finish over N days.
 * Daily completion (with undo), streak, days read, verses read, full readings, and gentle wording for missed days.
-* Family dashboard: who has read today, each person's progress today, this week, the last 30 days, and shared totals. Encouraging messages, fixed member order, no leaderboard.
+* Family dashboard: today's shared reading (48 pages, which parts are read), who has read today, each person's progress today, this week, the last 30 days, and shared totals. Encouraging messages, fixed member order, no leaderboard.
 * English / Arabic (RTL) interface, accessible controls, phone/tablet/desktop layouts, installable as an app.
 * Download my data, delete my account.
 
@@ -64,8 +66,8 @@ docker run -p 3000:3000 -v baqarah-data:/data baqarah
 ## Tests
 
 ```bash
-npm test            # 37 API tests: auth, invitations, 6-member cap, permissions, isolation, progress, time zones, errors
-npm run build && npm run test:e2e   # 9 browser tests (Playwright/Chromium): exact Arabic text, autosave, completion, invites, RTL, dark mode, responsive
+npm test            # 44 API tests: auth, invitations, 6-member cap, permissions, isolation, progress, time zones, errors
+npm run build && npm run test:e2e   # 11 browser tests (Playwright/Chromium): exact Arabic text, autosave, completion, invites, RTL, dark mode, responsive
 npm run verify:quran  # checksum of the stored Quran text
 ```
 

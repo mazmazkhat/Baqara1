@@ -60,6 +60,13 @@ const en = {
 
   // settings
   profile: 'Profile', display_name: 'Display name', avatar: 'Avatar', color: 'Colour', none: 'Initials',
+  plan_part: 'My part of the family’s daily reading', plan_part_d: 'The Surah is split into six fixed parts (6, 6, 9, 9, 9 and 9 pages). Each person reads one part every day, so together the family reads all of Al-Baqarah daily.',
+  part_n: 'Part {n}', pages_range: 'Pages {from}–{to}', n_pages: '{n} pages', available: 'Available', taken_by: 'Chosen by {name}', yours: 'Your part',
+  choose_part: 'Choose your part', choose_part_prompt: 'Choose which part of Al-Baqarah you will read each day.', your_part_line: 'Part {n} · Pages {from}–{to}',
+  shared_title: 'Today’s shared reading', pages_read_today: '{n} of {t} pages read today', not_chosen: 'Not chosen yet',
+  whole_surah_today: 'Together you completed Surah Al-Baqarah today. Alhamdulillah.', whole_surah_days: 'Times we completed the Surah together',
+  page_view: 'Full page view', list_view: 'Verse-by-verse view', next_page: 'Next page', prev_page: 'Previous page', page_x_of: 'Page {p}',
+  err_part_taken: 'Someone else has already chosen this part. Please choose another.', err_bad_part: 'Please choose one of the six parts.',
   reading_plan: 'Reading pace', plan_free: 'At my own pace', plan_free_d: 'Continue from where you stopped; mark the day when you’ve read.',
   plan_whole: 'Whole Surah each day', plan_whole_d: 'Read all 286 verses in one day.',
   plan_verses: 'Verses per day', plan_verses_d: 'A set number of verses each day.',
@@ -147,6 +154,13 @@ const ar = {
   gentle_missed_none: 'قرأت كل يوم في الشهر الماضي. الحمد لله.',
 
   profile: 'الملف الشخصي', display_name: 'الاسم الظاهر', avatar: 'الصورة الرمزية', color: 'اللون', none: 'الحروف الأولى',
+  plan_part: 'جزئي من قراءة العائلة اليومية', plan_part_d: 'قُسّمت السورة إلى ستة أجزاء ثابتة (٦ و٦ و٩ و٩ و٩ و٩ صفحات). يقرأ كل فرد جزءًا واحدًا يوميًا، فتقرأ العائلة سورة البقرة كاملة كل يوم.',
+  part_n: 'الجزء {n}', pages_range: 'الصفحات {from}–{to}', n_pages: '{n} صفحات', available: 'متاح', taken_by: 'اختاره {name}', yours: 'جزؤك',
+  choose_part: 'اختر جزءك', choose_part_prompt: 'اختر الجزء الذي ستقرؤه من سورة البقرة كل يوم.', your_part_line: 'الجزء {n} · الصفحات {from}–{to}',
+  shared_title: 'قراءة العائلة اليوم', pages_read_today: 'قُرئت {n} من {t} صفحة اليوم', not_chosen: 'لم يُختر بعد',
+  whole_surah_today: 'أتممتم سورة البقرة معًا اليوم. الحمد لله.', whole_surah_days: 'مرات ختم السورة معًا',
+  page_view: 'عرض الصفحة كاملة', list_view: 'عرض آية آية', next_page: 'الصفحة التالية', prev_page: 'الصفحة السابقة', page_x_of: 'الصفحة {p}',
+  err_part_taken: 'اختار فرد آخر هذا الجزء. يرجى اختيار جزء آخر.', err_bad_part: 'يرجى اختيار أحد الأجزاء الستة.',
   reading_plan: 'وتيرة القراءة', plan_free: 'على راحتي', plan_free_d: 'تابع من حيث توقفت، وسجّل اليوم عندما تقرأ.',
   plan_whole: 'السورة كاملة كل يوم', plan_whole_d: 'قراءة الآيات الـ٢٨٦ في يوم واحد.',
   plan_verses: 'عدد آيات يومي', plan_verses_d: 'عدد ثابت من الآيات كل يوم.',

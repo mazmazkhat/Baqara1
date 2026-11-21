@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
   timezone        TEXT NOT NULL DEFAULT 'UTC',
   theme           TEXT NOT NULL DEFAULT 'system',  -- 'system' | 'light' | 'dark'
   font_scale      REAL NOT NULL DEFAULT 1.0,
+  reader_layout   TEXT NOT NULL DEFAULT 'list',    -- 'list' (verse by verse) | 'page' (full mushaf page)
   failed_logins   INTEGER NOT NULL DEFAULT 0,
   locked_until    TEXT,
   created_at      TEXT NOT NULL
@@ -57,9 +58,11 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS reading_plans (
   user_id         INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  plan_type       TEXT NOT NULL DEFAULT 'free' CHECK (plan_type IN ('free','whole','verses','days')),
+  plan_type       TEXT NOT NULL DEFAULT 'free' CHECK (plan_type IN ('free','whole','verses','days','pages')),
   verses_per_day  INTEGER,                         -- for 'verses'
   days_total      INTEGER,                         -- for 'days' (finish the Surah over N days)
+  page_from       INTEGER,                         -- for 'pages': my part of the family's daily reading
+  page_to         INTEGER,                         --   (mushaf pages 2-49; a page belongs to one member)
   updated_at      TEXT NOT NULL
 );
 

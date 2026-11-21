@@ -52,7 +52,7 @@ Full DDL: [`server/schema.sql`](../server/schema.sql). `*_date` columns are loca
 | `family_memberships` | User ↔ family, access level | role `admin`/`member`, status `invited`/`active`, sort_order (fixed display order) |
 | `invitations` | Join / reset-PIN links | token_hash (sha-256, token never stored), purpose, expires_at, used_at |
 | `sessions` | Signed-in devices | token_hash, expires_at (180 days), last_seen_at |
-| `reading_plans` | Preferred pace | plan_type `free`/`whole`/`verses`/`days`, verses_per_day, days_total |
+| `reading_plans` | Preferred pace / family part | plan_type `free`/`whole`/`verses`/`days`/`pages`, verses_per_day, days_total, page_from, page_to (one of the six fixed parts) |
 | `reading_progress` | Where each person is | current_verse, cycle_start_verse, furthest_verse, cycles_completed, total_verses_read |
 | `daily_completions` | "I read today" | local_date (unique per user), from_verse, to_verse, prev_state (for undo) |
 | `bookmarks` | Saved verses | verse (unique per user) |
@@ -98,6 +98,6 @@ No advertising, analytics or tracking scripts are used.
 
 ## 7. Roadmap
 
-* **Phase 1 (this version):** authentication & invitations, six-member family, verified Quran reader (text size, light/dark, bookmarks, autosave, continue), reading plans, daily completion with undo, streaks, gentle missed-day wording, family dashboard with weekly/monthly history, English/Arabic, export & delete.
+* **Phase 1 (this version):** authentication & invitations, six-member family, verified Quran reader (text size, light/dark, bookmarks, autosave, continue), reading plans, **six fixed family parts (6-6-9-9-9-9 pages, one per person) and the family's shared daily reading of the whole Surah**, **full mushaf page view**, daily completion with undo, streaks, gentle missed-day wording, family dashboard with weekly/monthly history, English/Arabic, export & delete.
 * **Phase 2:** web-push reminders (family default + personal override, quiet days, one gentle follow-up at most), verse audio, translations, reflections (private / shared with family), family goals.
 * **Phase 3:** optional profile photos, offline reading of the cached text, backups helper.

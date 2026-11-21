@@ -1,13 +1,16 @@
 import { localDate, addDays, streak, daysBetween } from './time.js';
+import { verseRangeOfPages, FIRST_PAGE, LAST_PAGE, partOfPlan } from './quran.js';
 
 export const TOTAL_VERSES = 286;
 
 export async function getPlan(db, userId) {
   return (
-    (await db.get('SELECT plan_type, verses_per_day, days_total FROM reading_plans WHERE user_id = ?', userId)) ?? {
+    (await db.get('SELECT plan_type, verses_per_day, days_total, page_from, page_to FROM reading_plans WHERE user_id = ?', userId)) ?? {
       plan_type: 'free', // continue from where I stopped, at my own pace
       verses_per_day: null,
       days_total: null,
+      page_from: null,
+      page_to: null,
     }
   );
 }
@@ -43,7 +46,21 @@ export async function saveProgress(db, userId, verse, seen, nowIso) {
     verse, furthest, total, nowIso, userId);
 }
 
+/** Where a plan's daily reading starts (used when a plan is chosen or a day is completed). */
+export function planStartVerse(plan, currentVerse) {
+  if (plan.plan_type === 'pages') return verseRangeOfPages(plan.page_from, plan.page_to).from;
+  if (plan.plan_type === 'whole') return 1;
+  return currentVerse;
+}
+
 export function todayPortion(plan, progress) {
+  if (plan.plan_type === 'pages') {
+    // My fixed part of the family's daily reading: the same pages every day.
+    const { from, to } = verseRangeOfPages(plan.page_from, plan.page_to);
+    const reached = Math.min(to, Math.max(progress.furthest_verse, from - 1));
+    const pct = Math.round((Math.max(0, reached - from + 1) / (to - from + 1)) * 100);
+    return { from, to, pageFrom: plan.page_from, pageTo: plan.page_to, percent: Math.max(0, Math.min(100, pct)) };
+  }
   const from = progress.cycle_start_verse;
   const to = Math.min(TOTAL_VERSES, from + portionSize(plan) - 1);
   const reached = Math.min(to, Math.max(progress.furthest_verse, from - 1));
@@ -60,9 +77,11 @@ export async function markComplete(db, user, familyId, now) {
   const plan = await getPlan(db, user.id);
   const p = await getProgress(db, user.id, nowIso);
   const portion = todayPortion(plan, p);
-  const toVerse = Math.max(portion.from, Math.min(TOTAL_VERSES, Math.max(p.furthest_verse, p.current_verse)));
-  const finishedSurah = toVerse >= TOTAL_VERSES;
-  const nextStart = plan.plan_type === 'whole' || finishedSurah ? 1 : toVerse + 1;
+  const isPart = plan.plan_type === 'pages';
+  // A family part counts as read in full when marked; other plans record how far the reader got.
+  const toVerse = isPart ? portion.to : Math.max(portion.from, Math.min(TOTAL_VERSES, Math.max(p.furthest_verse, p.current_verse)));
+  const finishedSurah = !isPart && toVerse >= TOTAL_VERSES;
+  const nextStart = isPart ? portion.from : plan.plan_type === 'whole' || finishedSurah ? 1 : toVerse + 1;
 
   await db.run(
     'INSERT INTO daily_completions (user_id, family_id, local_date, from_verse, to_verse, completed_at, prev_state) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -117,6 +136,7 @@ export async function personalStats(db, user, joinedAt, now) {
     today,
     doneToday: dates.has(today),
     plan,
+    part: partOfPlan(plan)?.number ?? null,
     portion: dates.has(today) ? { ...portion, percent: 100 } : portion,
     position: progress.current_verse,
     surahPercent: Math.round((Math.max(0, progress.furthest_verse) / TOTAL_VERSES) * 100),
@@ -126,4 +146,18 @@ export async function personalStats(db, user, joinedAt, now) {
     totalDays: dates.size,
     notMarkedLast30: notMarked,
   };
+}
+
+/** Which pages a set of completions covers (a page counts when every verse on it was read). */
+export function coverage(completions) {
+  const read = new Uint8Array(TOTAL_VERSES + 2);
+  for (const c of completions) for (let v = c.from_verse; v <= c.to_verse; v++) read[v] = 1;
+  const pagesRead = [];
+  for (let p = FIRST_PAGE; p <= LAST_PAGE; p++) {
+    const { from, to } = verseRangeOfPages(p, p);
+    let all = true;
+    for (let v = from; v <= to; v++) if (!read[v]) { all = false; break; }
+    if (all) pagesRead.push(p);
+  }
+  return { pagesRead, wholeSurah: pagesRead.length === LAST_PAGE - FIRST_PAGE + 1 };
 }

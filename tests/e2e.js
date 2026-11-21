@@ -162,6 +162,17 @@ test('administrator removes a member, invites a new one, and they join from the 
   await newcomer.click('text=Join the family');
   await newcomer.waitForSelector('text=Assalamu alaikum, Khalid');
   await newcomer.waitForSelector('.tabbar');
+  // The newcomer chooses the part that Omar's removal freed (part 6, pages 41-49).
+  await newcomer.waitForSelector('text=Choose which part of Al-Baqarah');
+  await newcomer.click('a:has-text("Choose your part")');
+  await newcomer.waitForSelector('text=My part of the family’s daily reading');
+  await newcomer.check('input[name=plan][value=pages]');
+  assert.equal(await newcomer.isDisabled('input[name=part][value="1"]'), true, 'part 1 is taken');
+  await newcomer.check('input[name=part][value="6"]');
+  await newcomer.click('#plan button.primary');
+  await newcomer.waitForSelector('text=Saved');
+  await newcomer.click('nav >> text=Home');
+  await newcomer.waitForSelector('text=Part 6 · Pages 41–49');
   // Link cannot be reused.
   const again = await phone();
   await again.goto(link);
@@ -208,4 +219,61 @@ test('every page fits phone, tablet and desktop widths without errors', async ()
     assert.deepEqual(errors, []);
     await ctx.close();
   }
+});
+
+test('family page shows the six parts and the pages read today', async () => {
+  const page = await phone();
+  await signIn(page, 'maryam', '2468');
+  await page.click('nav >> text=Family');
+  await page.waitForSelector('text=Today’s shared reading');
+  assert.equal(await page.locator('.part-row').count(), 6);
+  assert.equal(await page.locator('.pages-strip i').count(), 48);
+  const read = await page.locator('.pages-strip i.read').count();
+  const txt = await page.textContent('#shared-h + p');
+  assert.ok(txt.includes(`${read} of 48 pages read today`) || txt.includes('completed Surah Al-Baqarah'), txt);
+  assert.match(await page.locator('.part-row').nth(1).textContent(), /Part 2.*Pages 8–13.*Maryam/);
+  await page.context().close();
+});
+
+test('full page view shows one mushaf page at a time, turns pages, and is remembered', async () => {
+  const page = await phone();
+  await signIn(page, 'ibrahim', '2468'); // part 3: pages 14-22
+  await page.click('nav >> text=Read');
+  await page.waitForSelector('.ayah');
+  await page.click('button[aria-label="Full page view"]');
+  await page.waitForSelector('.mushaf-page');
+  const pageNo = async () => Number((await page.textContent('.page-nav .small')).match(/Page (\d+)/)[1]);
+  const p0 = await pageNo();
+  assert.ok(p0 >= 14 && p0 <= 22, `opens inside my part (page ${p0})`);
+  assert.match(await page.textContent('.mushaf-head'), /Your part/);
+  const check = async (p) => {
+    const texts = await page.$$eval('.mushaf-text .ayah-inline .text', (els) => els.map((e) => e.textContent));
+    const expected = QURAN.verses.filter((v) => v.page === p).map((v) => v.text);
+    assert.deepEqual(texts, expected, `page ${p} text is exact`);
+  };
+  await check(p0);
+  await page.click('button[aria-label="Next page"]');
+  await page.waitForFunction((n) => document.querySelector('.page-nav .small').textContent.includes(`Page ${n}`), p0 + 1);
+  await check(p0 + 1);
+  assert.ok(await noHorizontalScroll(page));
+  // Swipe towards the right = next page (like an Arabic book).
+  await page.evaluate(() => {
+    const el = document.querySelector('.mushaf-wrap');
+    const mk = (type, x) => { const t = new Touch({ identifier: 1, target: el, clientX: x, clientY: 300 }); return new TouchEvent(type, { bubbles: true, touches: type === 'touchend' ? [] : [t], changedTouches: [t] }); };
+    el.dispatchEvent(mk('touchstart', 60)); el.dispatchEvent(mk('touchend', 300));
+  });
+  await page.waitForFunction((n) => document.querySelector('.page-nav .small').textContent.includes(`Page ${n}`), p0 + 2);
+  await page.waitForTimeout(2500); // autosave
+  await page.reload();
+  await page.waitForSelector('.mushaf-page');
+  assert.equal(await pageNo(), p0 + 2, 'reopens on the same page in page view');
+  // Opening page 2 shows the Surah heading and Basmala; the first verse is shown without it.
+  await page.click('button[aria-label="Bookmarks"]');
+  await page.fill('input[name=v]', '1');
+  await page.click('.verse-actions button:has-text("Go")');
+  await page.waitForSelector('.mushaf-opening .basmala');
+  assert.equal(await page.textContent('#v-1 .text'), QURAN.verses[0].text.slice(QURAN.basmala.prefixLength));
+  await page.click('button[aria-label="Verse-by-verse view"]');
+  await page.waitForSelector('.quran .ayah');
+  await page.context().close();
 });

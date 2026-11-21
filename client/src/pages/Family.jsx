@@ -27,6 +27,8 @@ export default function Family() {
         <p style={{ margin: 0 }}>{encouragement(t, d.today.done, d.today.active)}</p>
       </section>
 
+      <SharedReading shared={d.shared} t={t} me={me} />
+
       <section className="card" aria-label={t('members')}>
         {d.members.map((m) => (
           <div className="member" key={m.id}>
@@ -75,9 +77,35 @@ export default function Family() {
           <div className="stat"><b>{t.num(d.totals.daysAllTogether)}</b><span>{t('days_all_together')}</span></div>
           <div className="stat"><b>{t.num(d.totals.readingDays)}</b><span>{t('reading_days')}</span></div>
           <div className="stat"><b>{t.num(d.totals.versesRead)}</b><span>{t('family_verses')}</span></div>
-          <div className="stat"><b>{t.num(d.totals.surahCompletions)}</b><span>{t('surah_completions')}</span></div>
+          <div className="stat"><b>{t.num(d.shared.wholeSurahDays)}</b><span>{t('whole_surah_days')}</span></div>
         </div>
       </section>
     </div>
+  );
+}
+
+function SharedReading({ shared, t, me }) {
+  const read = new Set(shared.pagesReadToday);
+  const pages = Array.from({ length: shared.totalPages }, (_, i) => i + 2);
+  return (
+    <section className={`card ${shared.wholeSurahToday ? 'accent' : ''}`} aria-labelledby="shared-h">
+      <h2 id="shared-h">{t('shared_title')}</h2>
+      <p style={{ margin: 0 }}>{shared.wholeSurahToday ? <b>{t('whole_surah_today')}</b> : t('pages_read_today', { n: read.size, t: shared.totalPages })}</p>
+      <div className="pages-strip" role="img" aria-label={t('pages_read_today', { n: read.size, t: shared.totalPages })}>
+        {pages.map((p) => <i key={p} className={read.has(p) ? 'read' : ''} title={t('page_n', { p })} />)}
+      </div>
+      <div style={{ marginTop: 10 }}>
+        {shared.parts.map((p) => (
+          <div className="part-row" key={p.number}>
+            {p.owner ? <Avatar person={p.owner} size="sm" done={p.owner.doneToday} /> : <span className="avatar sm empty" aria-hidden="true">?</span>}
+            <div className="info">
+              <div><b>{t('part_n', { n: p.number })}</b> <span className="muted small">· {t('pages_range', { from: p.pageFrom, to: p.pageTo })}</span></div>
+              <div className="small muted">{p.owner ? <>{p.owner.displayName}{p.owner.id === me.user.id ? ` (${t('you')})` : ''}</> : t('not_chosen')}</div>
+            </div>
+            {p.owner && (p.owner.doneToday ? <span className="pill done"><ICheck />{t('read_today')}</span> : <span className="pill">{t('not_yet')}</span>)}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
