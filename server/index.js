@@ -20,7 +20,9 @@ try {
 } catch (e) {
   console.error('\n  Could not connect to the database.');
   console.error('  Check DATABASE_URL and DATABASE_AUTH_TOKEN in Render → Environment (no spaces, token not expired).');
-  console.error(`  Details: ${e.message}\n`);
+  console.error(`  Details: ${e.message}`);
+  if (e.cause) console.error(`  Cause: ${e.cause.message || e.cause}`);
+  console.error(`  Database host: ${dbUrl.replace(/^\w+:\/\//, '').split(/[/?]/)[0]}\n`);
   process.exit(1);
 }
 const needsSetup = (await db.get('SELECT COUNT(*) AS n FROM families')).n === 0;

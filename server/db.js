@@ -46,15 +46,26 @@ export class Db {
   }
 }
 
+/** Split schema.sql into single statements (comments removed). */
+export function schemaStatements(includePragmas) {
+  return SCHEMA.replace(/--[^\n]*/g, '')
+    .split(/;\s*(?:\n|$)/)
+    .map((x) => x.trim())
+    .filter((x) => x && (includePragmas || !/^PRAGMA/i.test(x)));
+}
+
 export async function openDb(url = process.env.DATABASE_URL || 'file:var/baqara.db', authToken = process.env.DATABASE_AUTH_TOKEN) {
-  if (url.startsWith('file:')) mkdirSync(path.dirname(path.resolve(url.slice(5))), { recursive: true });
-  const client = createClient({ url, authToken: authToken || undefined });
-  if (url.startsWith('file:')) await client.execute('PRAGMA journal_mode = WAL').catch(() => {});
-  // Hosted databases: send only the CREATE statements (PRAGMAs are local-file settings).
-  const schema = url.startsWith('file:') ? SCHEMA : SCHEMA.replace(/^\s*PRAGMA[^;]*;/gim, '');
-  await client.executeMultiple(schema);
+  url = url.trim();
+  const local = url.startsWith('file:');
+  if (local) mkdirSync(path.dirname(path.resolve(url.slice(5))), { recursive: true });
+  // For Turso, talk plain HTTPS (most compatible with hosts and proxies) instead of WebSockets.
+  const connectUrl = url.startsWith('libsql://') ? 'https://' + url.slice('libsql://'.length) : url;
+  const client = createClient({ url: connectUrl, authToken: authToken ? authToken.trim() : undefined });
+  if (local) await client.execute('PRAGMA journal_mode = WAL').catch(() => {});
+  // Create tables one statement at a time (PRAGMAs are local-file settings only).
+  await client.batch(schemaStatements(local), 'write');
   // Columns added after the first release (CREATE TABLE IF NOT EXISTS does not add them to old tables).
-  const cols = (await client.execute('PRAGMA table_info(daily_completions)')).rows.map((r) => r.name);
+  const cols = (await client.execute("SELECT name FROM pragma_table_info('daily_completions')")).rows.map((r) => r.name);
   if (!cols.includes('prev_state')) await client.execute('ALTER TABLE daily_completions ADD COLUMN prev_state TEXT');
   return new Db(client);
 }
