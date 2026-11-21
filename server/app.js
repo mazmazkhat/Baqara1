@@ -12,7 +12,8 @@ import { isValidTimeZone, localDate, addDays } from './time.js';
 import {
   TOTAL_VERSES, getPlan, getProgress, saveProgress, markComplete, undoComplete, personalStats, todayPortion, planStartVerse, coverage,
 } from './reading.js';
-import { QURAN, PARTS, partByNumber, partOfPlan } from './quran.js';
+import { QURAN, partByNumber } from './quran.js';
+import { familyDate, partsForDay, rangesForDay, wholeSurahDates, syncPartCompletion, yesterday } from './parts.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const INVITE_DAYS = 7;
@@ -350,29 +351,18 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
 
   app.put('/api/plan', route(async (req) => {
     const type = req.body.planType;
-    if (!['free', 'whole', 'verses', 'days', 'pages'].includes(type)) fail(400, 'bad_plan');
+    if (!['free', 'whole', 'verses', 'days'].includes(type)) fail(400, 'bad_plan');
     const vpd = type === 'verses' ? int(req.body.versesPerDay) : null;
     const days = type === 'days' ? int(req.body.daysTotal) : null;
-    const part = type === 'pages' ? partByNumber(int(req.body.part)) : null;
     if (type === 'verses' && !(vpd >= 1 && vpd <= TOTAL_VERSES)) fail(400, 'bad_plan');
     if (type === 'days' && !(days >= 1 && days <= 365)) fail(400, 'bad_plan');
-    if (type === 'pages' && !part) fail(400, 'bad_part');
-    const plan = { plan_type: type, verses_per_day: vpd, days_total: days, page_from: part?.pageFrom ?? null, page_to: part?.pageTo ?? null };
+    const plan = { plan_type: type, verses_per_day: vpd, days_total: days };
     await db.tx(async (t) => {
-      if (part) {
-        // One part per person: refuse a part someone else in the family already has.
-        const owner = await t.get(
-          `SELECT u.display_name FROM reading_plans p JOIN family_memberships m ON m.user_id = p.user_id JOIN users u ON u.id = p.user_id
-            WHERE m.family_id = ? AND p.user_id != ? AND p.plan_type = 'pages' AND p.page_from = ?`,
-          req.user.family_id, req.user.id, part.pageFrom);
-        if (owner) fail(409, 'part_taken');
-      }
       await t.run(
-        `INSERT INTO reading_plans (user_id, plan_type, verses_per_day, days_total, page_from, page_to, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO reading_plans (user_id, plan_type, verses_per_day, days_total, page_from, page_to, updated_at) VALUES (?, ?, ?, ?, NULL, NULL, ?)
          ON CONFLICT(user_id) DO UPDATE SET plan_type = excluded.plan_type, verses_per_day = excluded.verses_per_day,
-           days_total = excluded.days_total, page_from = excluded.page_from, page_to = excluded.page_to, updated_at = excluded.updated_at`,
-        req.user.id, type, vpd, days, plan.page_from, plan.page_to, iso());
-      // Start the new plan from its own beginning (a family part always starts at its first verse).
+           days_total = excluded.days_total, page_from = NULL, page_to = NULL, updated_at = excluded.updated_at`,
+        req.user.id, type, vpd, days, iso());
       const p = await getProgress(t, req.user.id, iso());
       const start = planStartVerse(plan, p.current_verse);
       await t.run('UPDATE reading_progress SET cycle_start_verse = ?, current_verse = ?, furthest_verse = ?, updated_at = ? WHERE user_id = ?',
@@ -381,27 +371,73 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     return { ok: true };
   }));
 
-  /** The six fixed parts and who has chosen each one. */
-  async function familyParts(fid, familyToday) {
-    const rows = await db.all(
-      `SELECT u.id, u.display_name, u.avatar, u.avatar_color, u.timezone, p.page_from, p.page_to
-         FROM reading_plans p JOIN family_memberships m ON m.user_id = p.user_id JOIN users u ON u.id = p.user_id
-        WHERE m.family_id = ? AND m.status = 'active' AND p.plan_type = 'pages'`, fid);
-    const done = new Set((await db.all('SELECT user_id FROM daily_completions WHERE family_id = ? AND local_date = ?', fid, familyToday)).map((r) => r.user_id));
-    return PARTS.map((part) => {
-      const o = rows.find((r) => r.page_from === part.pageFrom && r.page_to === part.pageTo);
-      return {
-        ...part,
-        pages: part.pageTo - part.pageFrom + 1,
-        owner: o ? { id: o.id, displayName: o.display_name, avatar: o.avatar, avatarColor: o.avatar_color, doneToday: done.has(o.id) } : null,
-      };
-    });
+  // ---------- daily family parts ----------
+  const familyOf = (req) => db.get('SELECT id, timezone FROM families WHERE id = ?', req.user.family_id);
+
+  async function todayParts(req) {
+    const family = await familyOf(req);
+    const date = familyDate(family, now());
+    const [parts, ranges, yParts] = await Promise.all([
+      partsForDay(db, family.id, date),
+      rangesForDay(db, family.id, date),
+      db.all('SELECT part FROM part_claims WHERE user_id = ? AND local_date = ?', req.user.id, yesterday(date)),
+    ]);
+    const cov = coverage(ranges);
+    return {
+      date,
+      parts,
+      mine: parts.filter((p) => p.claim?.user.id === req.user.id).map((p) => p.number),
+      myYesterday: yParts.map((r) => r.part),
+      totalPages: 48,
+      pagesReadToday: cov.pagesRead,
+      wholeSurahToday: cov.wholeSurah,
+    };
   }
 
-  app.get('/api/family/parts', route(async (req) => {
-    const f = await db.get('SELECT timezone FROM families WHERE id = ?', req.user.family_id);
-    return { parts: await familyParts(req.user.family_id, localDate(f.timezone, now())) };
+  app.get('/api/parts/today', route((req) => todayParts(req)));
+
+  app.post('/api/parts/:n/claim', route(async (req) => {
+    const part = partByNumber(int(req.params.n));
+    if (!part) fail(400, 'bad_part');
+    const family = await familyOf(req);
+    const date = familyDate(family, now());
+    await db.tx(async (t) => {
+      const c = await t.get('SELECT user_id FROM part_claims WHERE family_id = ? AND local_date = ? AND part = ?', family.id, date, part.number);
+      if (c && c.user_id !== req.user.id) fail(409, 'part_taken');
+      if (!c) await t.run('INSERT INTO part_claims (family_id, local_date, part, user_id, claimed_at) VALUES (?, ?, ?, ?, ?)', family.id, date, part.number, req.user.id, iso());
+    });
+    return todayParts(req);
   }));
+
+  app.delete('/api/parts/:n/claim', route(async (req) => {
+    const part = partByNumber(int(req.params.n));
+    if (!part) fail(400, 'bad_part');
+    const family = await familyOf(req);
+    const date = familyDate(family, now());
+    const c = await db.get('SELECT * FROM part_claims WHERE family_id = ? AND local_date = ? AND part = ?', family.id, date, part.number);
+    if (!c) return todayParts(req);
+    // Members give back their own part; the administrator can free a part someone took but has not read.
+    if (c.user_id !== req.user.id && req.user.role !== 'admin') fail(403, 'not_your_part');
+    if (c.done_at) fail(409, 'part_done');
+    await db.run('DELETE FROM part_claims WHERE id = ?', c.id);
+    return todayParts(req);
+  }));
+
+  async function setPartDone(req, done) {
+    const part = partByNumber(int(req.params.n));
+    if (!part) fail(400, 'bad_part');
+    const family = await familyOf(req);
+    const date = familyDate(family, now());
+    await db.tx(async (t) => {
+      const c = await t.get('SELECT * FROM part_claims WHERE family_id = ? AND local_date = ? AND part = ? AND user_id = ?', family.id, date, part.number, req.user.id);
+      if (!c) fail(409, 'part_not_yours');
+      await t.run('UPDATE part_claims SET done_at = ? WHERE id = ?', done ? iso() : null, c.id);
+      await syncPartCompletion(t, req.user, family.id, localDate(req.user.timezone, now()), date, iso());
+    });
+    return todayParts(req);
+  }
+  app.post('/api/parts/:n/done', route((req) => setPartDone(req, true)));
+  app.delete('/api/parts/:n/done', route((req) => setPartDone(req, false)));
 
   app.post('/api/completions/today', route(async (req) => {
     try {
@@ -470,13 +506,9 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
       db.get('SELECT COALESCE(SUM(p.cycles_completed),0) AS n FROM family_memberships m JOIN reading_progress p ON p.user_id = m.user_id WHERE m.family_id = ?', fid),
     ]);
     const counts = new Map(countRows.map((r) => [r.local_date, r.n]));
-    // Shared reading: which of the 48 pages the family has read today, and days the whole Surah was completed together.
-    const allRows = await db.all('SELECT local_date, from_verse, to_verse FROM daily_completions WHERE family_id = ?', fid);
-    const byDate = new Map();
-    for (const r of allRows) (byDate.get(r.local_date) ?? byDate.set(r.local_date, []).get(r.local_date)).push(r);
-    const todayCov = coverage(byDate.get(familyToday) ?? []);
-    const wholeDates = [...byDate.entries()].filter(([, rows]) => coverage(rows).wholeSurah).map(([d]) => d);
-    const parts = await familyParts(fid, familyToday);
+    // Shared reading: today's parts, which of the 48 pages are read, and days the whole Surah was read together.
+    const [parts, ranges, wholeDates] = await Promise.all([partsForDay(db, fid, familyToday), rangesForDay(db, fid, familyToday), wholeSurahDates(db, fid)]);
+    const todayCov = coverage(ranges);
     const days = (n) => Array.from({ length: n }, (_, i) => addDays(familyToday, i - n + 1)).map((d) => ({ date: d, count: counts.get(d) ?? 0 }));
 
     return {
@@ -492,6 +524,7 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
         wholeSurahToday: todayCov.wholeSurah,
         wholeSurahDays: wholeDates.length,
         wholeSurahThisWeek: days(7).map((d) => ({ date: d.date, whole: wholeDates.includes(d.date) })),
+        wholeSurahStreak: (() => { let n = 0; let d = wholeDates.includes(familyToday) ? familyToday : addDays(familyToday, -1); while (wholeDates.includes(d)) { n++; d = addDays(d, -1); } return n; })(),
       },
       totals: { readingDays: completionDays.n, versesRead: totals.verses, daysAllTogether: together.n, surahCompletions: cycles.n },
     };

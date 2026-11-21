@@ -97,6 +97,20 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   UNIQUE (user_id, verse)
 );
 
+-- Daily family parts: each day the Surah's six parts (6-6-9-9-9-9 pages) are free again.
+-- A member takes a part for the family's day; everyone sees it as taken. Goal: the whole Surah daily.
+CREATE TABLE IF NOT EXISTS part_claims (
+  id          INTEGER PRIMARY KEY,
+  family_id   INTEGER NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  local_date  TEXT NOT NULL,                       -- the family's calendar day (family time zone)
+  part        INTEGER NOT NULL CHECK (part BETWEEN 1 AND 6),
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  claimed_at  TEXT NOT NULL,
+  done_at     TEXT,
+  UNIQUE (family_id, local_date, part)
+);
+CREATE INDEX IF NOT EXISTS idx_part_claims_user ON part_claims(user_id, local_date);
+
 -- Phase 2 tables (schema ready; UI/API arrive in later versions) ------------------------
 
 CREATE TABLE IF NOT EXISTS reflections (

@@ -44,24 +44,27 @@ for (const [i, m] of DEMO_MEMBERS.entries()) {
     m.name, m.login, hashPin(m.pin), m.avatar, m.color, m.tz, joined);
   const uid = u.lastInsertRowid;
   await db.run("INSERT INTO family_memberships (family_id, user_id, role, status, sort_order, joined_at) VALUES (?, ?, ?, 'active', ?, ?)", fid, uid, m.role, i, joined);
-  // Each demo member reads one of the six fixed parts of the family's daily reading.
+  // Each day the members take parts of the Surah from Home. Demo: member i usually takes part i+1.
   const part = PARTS[i];
-  await db.run("INSERT INTO reading_plans (user_id, plan_type, page_from, page_to, updated_at) VALUES (?, 'pages', ?, ?, ?)", uid, part.pageFrom, part.pageTo, iso);
-
-  const today = localDate(m.tz, now);
+  await db.run("INSERT INTO reading_plans (user_id, plan_type, updated_at) VALUES (?, 'free', ?)", uid, iso);
+  const familyToday = localDate('Europe/London', now);
+  const memberToday = localDate(m.tz, now);
   let count = 0;
   for (let d = 41; d >= 0; d--) {
-    const date = addDays(today, -d);
+    const fDate = addDays(familyToday, -d);
+    const mDate = addDays(memberToday, -d);
+    const claimed = d === 0 ? m.login !== 'omar' : true;
     const done = d === 0 ? DONE_TODAY.has(m.login) : rand() < m.rate;
+    if (!claimed) continue;
+    await db.run('INSERT INTO part_claims (family_id, local_date, part, user_id, claimed_at, done_at) VALUES (?, ?, ?, ?, ?, ?)',
+      fid, fDate, part.number, uid, iso, done ? iso : null);
     if (!done) continue;
     count++;
-    await db.run('INSERT INTO daily_completions (user_id, family_id, local_date, from_verse, to_verse, completed_at) VALUES (?, ?, ?, ?, ?, ?)',
-      uid, fid, date, part.from, part.to, new Date(now.getTime() - d * 86400000).toISOString());
+    await db.run("INSERT INTO daily_completions (user_id, family_id, local_date, from_verse, to_verse, completed_at, prev_state) VALUES (?, ?, ?, ?, ?, ?, 'part')",
+      uid, fid, mDate, part.from, part.to, new Date(now.getTime() - d * 86400000).toISOString());
   }
-  const doneToday = DONE_TODAY.has(m.login);
-  const current = doneToday ? part.from : Math.min(part.to, part.from + 4);
   await db.run('INSERT INTO reading_progress (user_id, current_verse, cycle_start_verse, furthest_verse, cycles_completed, total_verses_read, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    uid, current, part.from, doneToday ? part.from - 1 : current + 2, 0, count * (part.to - part.from + 1), iso);
+    uid, part.from, part.from, part.from - 1, 0, count * (part.to - part.from + 1), iso);
 }
 await db.run('INSERT INTO bookmarks (user_id, verse, created_at) SELECT id, 255, ? FROM users WHERE login_name = ?', iso, 'yusuf');
 await db.run('INSERT INTO bookmarks (user_id, verse, created_at) SELECT id, 286, ? FROM users WHERE login_name = ?', iso, 'yusuf');

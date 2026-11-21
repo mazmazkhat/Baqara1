@@ -87,13 +87,15 @@ export async function openDb(url = process.env.DATABASE_URL || 'file:var/baqara.
       'DROP TABLE reading_plans_old',
     ], 'write');
   }
+  // Fixed parts became a daily choice on Home: earlier fixed-part plans go back to "at my own pace".
+  await client.execute("UPDATE reading_plans SET plan_type = 'free', page_from = NULL, page_to = NULL WHERE plan_type = 'pages'");
   return new Db(client);
 }
 
 /** Remove a person and everything that belongs to them (explicit, so it does not depend on FK enforcement). */
 export async function deleteUserData(db, userId) {
   await db.tx(async (t) => {
-    for (const table of ['sessions', 'invitations', 'reading_plans', 'reading_progress', 'daily_completions', 'bookmarks',
+    for (const table of ['part_claims', 'sessions', 'invitations', 'reading_plans', 'reading_progress', 'daily_completions', 'bookmarks',
       'reflections', 'reminders', 'push_subscriptions', 'family_memberships']) {
       await t.run(`DELETE FROM ${table} WHERE user_id = ?`, userId);
     }

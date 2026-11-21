@@ -1,5 +1,5 @@
 import { localDate, addDays, streak, daysBetween } from './time.js';
-import { verseRangeOfPages, FIRST_PAGE, LAST_PAGE, partOfPlan } from './quran.js';
+import { verseRangeOfPages, FIRST_PAGE, LAST_PAGE } from './quran.js';
 
 export const TOTAL_VERSES = 286;
 
@@ -98,7 +98,7 @@ export async function markComplete(db, user, familyId, now) {
 export async function undoComplete(db, user, now) {
   const today = localDate(user.timezone, now);
   const c = await db.get('SELECT * FROM daily_completions WHERE user_id = ? AND local_date = ?', user.id, today);
-  if (!c) return false;
+  if (!c || c.prev_state === 'part') return false; // part readings are undone from the part itself
   if (c.prev_state) {
     const s = JSON.parse(c.prev_state);
     await db.run(
@@ -136,7 +136,6 @@ export async function personalStats(db, user, joinedAt, now) {
     today,
     doneToday: dates.has(today),
     plan,
-    part: partOfPlan(plan)?.number ?? null,
     portion: dates.has(today) ? { ...portion, percent: 100 } : portion,
     position: progress.current_verse,
     surahPercent: Math.round((Math.max(0, progress.furthest_verse) / TOTAL_VERSES) * 100),

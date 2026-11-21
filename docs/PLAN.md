@@ -55,6 +55,7 @@ Full DDL: [`server/schema.sql`](../server/schema.sql). `*_date` columns are loca
 | `reading_plans` | Preferred pace / family part | plan_type `free`/`whole`/`verses`/`days`/`pages`, verses_per_day, days_total, page_from, page_to (one of the six fixed parts) |
 | `reading_progress` | Where each person is | current_verse, cycle_start_verse, furthest_verse, cycles_completed, total_verses_read |
 | `daily_completions` | "I read today" | local_date (unique per user), from_verse, to_verse, prev_state (for undo) |
+| `part_claims` | Who took which part today | family_id, local_date (family day), part 1–6 (unique per family/day), user_id, done_at |
 | `bookmarks` | Saved verses | verse (unique per user) |
 | `reflections` *(phase 2)* | Notes | body, verse_from/to, local_date, visibility `private`/`family` |
 | `reminders` *(phase 2)* | Daily reminders | user_id (NULL = family default), time_local, timezone, message, quiet_days, missed_followup |
@@ -98,6 +99,6 @@ No advertising, analytics or tracking scripts are used.
 
 ## 7. Roadmap
 
-* **Phase 1 (this version):** authentication & invitations, six-member family, verified Quran reader (text size, light/dark, bookmarks, autosave, continue), reading plans, **six fixed family parts (6-6-9-9-9-9 pages, one per person) and the family's shared daily reading of the whole Surah**, **full mushaf page view**, daily completion with undo, streaks, gentle missed-day wording, family dashboard with weekly/monthly history, English/Arabic, export & delete.
+* **Phase 1 (this version):** authentication & invitations, six-member family, verified Quran reader (text size, light/dark, bookmarks, autosave, continue), reading plans, **daily family parts (6-6-9-9-9-9 pages, taken on Home each day, visible to all) with the whole Surah as the family's daily goal**, **full mushaf page view that fits the screen**, daily completion with undo, streaks, gentle missed-day wording, family dashboard with weekly/monthly history, English/Arabic, export & delete.
 * **Phase 2:** web-push reminders (family default + personal override, quiet days, one gentle follow-up at most), verse audio, translations, reflections (private / shared with family), family goals.
 * **Phase 3:** optional profile photos, offline reading of the cached text, backups helper.

@@ -4,16 +4,29 @@ import { api } from '../api.js';
 import { useApp } from '../state.jsx';
 import { Avatar, Bar } from '../components/ui.jsx';
 import { CompleteButton, encouragement } from '../components/complete.jsx';
+import { TodayParts } from '../components/parts.jsx';
 import { IBook } from '../icons.jsx';
 
 export default function Home() {
   const { me, t } = useApp();
   const s = me.stats;
+  const [parts, setParts] = useState(null);
+  const [partsErr, setPartsErr] = useState(null);
   const [dash, setDash] = useState(null);
   const [dashErr, setDashErr] = useState(null);
-  const load = () => api('/family/dashboard').then(setDash).catch(setDashErr);
-  useEffect(() => { load(); }, [s.doneToday]);
 
+  const loadParts = () => api('/parts/today').then(setParts).catch(setPartsErr);
+  useEffect(() => {
+    loadParts();
+    // Keep the parts fresh: others take and finish parts during the day.
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') loadParts(); }, 30000);
+    const onShow = () => { if (document.visibilityState === 'visible') loadParts(); };
+    document.addEventListener('visibilitychange', onShow);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onShow); };
+  }, []);
+  useEffect(() => { api('/family/dashboard').then(setDash).catch(setDashErr); }, [s.doneToday, parts?.pagesReadToday.length]);
+
+  const hasPart = parts && parts.mine.length > 0;
   const started = s.position > 1 || s.versesRead > 0;
   const partial = s.plan.plan_type !== 'free' && s.plan.plan_type !== 'whole';
 
@@ -22,25 +35,21 @@ export default function Home() {
       <h1>{t('greeting', { name: me.user.displayName })}</h1>
       <p className="sub">{t.dateFmt(s.today, { weekday: 'long', day: 'numeric', month: 'long' })}</p>
 
-      <section className="card accent" aria-labelledby="today-h">
-        <h2 id="today-h">{t('todays_reading')}</h2>
-        <p className="muted" style={{ marginTop: 0 }}>{s.doneToday ? t('done_today') : t('not_yet_today')}</p>
-        {s.part ? (
-          <p className="small" style={{ margin: '0 0 8px' }}><b>{t('your_part_line', { n: s.part, from: s.portion.pageFrom, to: s.portion.pageTo })}</b> <span className="muted">· {t('verses_range', { from: s.portion.from, to: s.portion.to })}</span></p>
-        ) : partial && <p className="small" style={{ margin: '0 0 8px' }}><b>{t('verses_range', { from: s.portion.from, to: s.portion.to })}</b></p>}
-        <div className="row between small muted"><span>{partial ? t('portion_progress') : t('surah_progress')}</span><span>{t.num(partial ? s.portion.percent : s.surahPercent)}%</span></div>
-        <Bar value={partial ? s.portion.percent : s.surahPercent} label={t('portion_progress')} />
-        <div className="stack" style={{ marginTop: 16 }}>
-          <Link className="btn primary block" to="/read"><IBook />{started ? t('continue_from', { v: s.position }) : t('start_reading')}</Link>
-          <CompleteButton />
-        </div>
-      </section>
+      {parts ? <TodayParts data={parts} setData={setParts} />
+        : partsErr ? <section className="card"><p className="muted">{t.err(partsErr.code)}</p><button className="btn" onClick={loadParts}>{t('retry')}</button></section>
+          : <section className="card"><div className="skeleton" style={{ height: 22, width: '60%' }} /><div className="skeleton" style={{ height: 120 }} /></section>}
 
-      {!s.part && (
-        <section className="card">
-          <h2>{t('choose_part')}</h2>
-          <p className="muted" style={{ marginTop: 0 }}>{t('choose_part_prompt')}</p>
-          <Link className="btn block" to="/settings#plan">{t('choose_part')}</Link>
+      {parts && !hasPart && (
+        <section className="card" aria-labelledby="own-h">
+          <h2 id="own-h">{t('own_pace_title')}</h2>
+          <p className="muted" style={{ marginTop: 0 }}>{s.doneToday ? t('done_today') : t('no_part_today')}</p>
+          {partial && <p className="small" style={{ margin: '0 0 8px' }}><b>{t('verses_range', { from: s.portion.from, to: s.portion.to })}</b></p>}
+          <div className="row between small muted"><span>{partial ? t('portion_progress') : t('surah_progress')}</span><span>{t.num(partial ? s.portion.percent : s.surahPercent)}%</span></div>
+          <Bar value={partial ? s.portion.percent : s.surahPercent} label={t('portion_progress')} />
+          <div className="stack" style={{ marginTop: 16 }}>
+            <Link className="btn primary block" to="/read"><IBook />{started ? t('continue_from', { v: s.position }) : t('start_reading')}</Link>
+            <CompleteButton />
+          </div>
         </section>
       )}
 
@@ -63,7 +72,7 @@ export default function Home() {
 
       <section className="grid2" aria-label={t('nav_history')}>
         <div className="stat"><b>{t.num(s.streak)}</b><span>{t('streak')}</span></div>
-        <div className="stat"><b>{t.num(s.totalDays)}</b><span>{t('total_days')}</span></div>
+        <div className="stat"><b>{t.num(dash?.shared.wholeSurahDays ?? 0)}</b><span>{t('whole_surah_days')}</span></div>
       </section>
 
       <p className="footer-note">{t('disclaimer')}</p>

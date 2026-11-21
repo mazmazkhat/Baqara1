@@ -42,48 +42,21 @@ function Profile() {
   );
 }
 
-export function PartPicker({ value, onChange, parts, me, t }) {
-  return (
-    <div role="radiogroup" aria-label={t('choose_part')}>
-      {parts.map((p) => {
-        const mine = p.owner?.id === me.user.id;
-        const taken = p.owner && !mine;
-        return (
-          <label key={p.number} className={`choice part-choice ${taken ? 'taken' : ''}`}>
-            <input type="radio" name="part" value={p.number} checked={value === p.number} disabled={taken} onChange={() => onChange(p.number)} />
-            <span style={{ flex: 1 }}>
-              <b>{t('part_n', { n: p.number })}</b> · {t('pages_range', { from: p.pageFrom, to: p.pageTo })}
-              <span className="muted small"> · {t('n_pages', { n: p.pages })}</span><br />
-              <span className="muted small">{mine ? t('yours') : p.owner ? t('taken_by', { name: p.owner.displayName }) : t('available')}</span>
-            </span>
-            {p.owner && <Avatar person={p.owner} size="sm" />}
-          </label>
-        );
-      })}
-    </div>
-  );
-}
-
 function Plan() {
   const { me, t, refresh, showToast } = useApp();
   const p = me.stats.plan;
   const [type, setType] = useState(p.plan_type);
   const [vpd, setVpd] = useState(p.verses_per_day || 20);
   const [days, setDays] = useState(p.days_total || 30);
-  const [part, setPart] = useState(me.stats.part);
-  const [parts, setParts] = useState(null);
   const [error, setError] = useState(null);
-  const loadParts = () => api('/family/parts').then((r) => setParts(r.parts)).catch(setError);
-  useEffect(() => { loadParts(); }, []);
   async function save(e) {
     e.preventDefault();
     setError(null);
     try {
-      await api('/plan', { method: 'PUT', body: { planType: type, versesPerDay: Number(vpd), daysTotal: Number(days), part } });
+      await api('/plan', { method: 'PUT', body: { planType: type, versesPerDay: Number(vpd), daysTotal: Number(days) } });
       await refresh();
-      loadParts();
       showToast(t('saved'));
-    } catch (err) { setError(err); loadParts(); }
+    } catch (err) { setError(err); }
   }
   const opt = (value, title, desc, extra) => (
     <div key={value}>
@@ -97,8 +70,6 @@ function Plan() {
   return (
     <Section title={t('reading_plan')}>
       <form onSubmit={save} id="plan">
-        {opt('pages', t('plan_part'), t('plan_part_d'),
-          parts ? <PartPicker value={part} onChange={setPart} parts={parts} me={me} t={t} /> : <span className="muted">{t('loading')}</span>)}
         {opt('free', t('plan_free'), t('plan_free_d'))}
         {opt('whole', t('plan_whole'), t('plan_whole_d'))}
         {opt('verses', t('plan_verses'), t('plan_verses_d'),
@@ -106,7 +77,7 @@ function Plan() {
         {opt('days', t('plan_days'), t('plan_days_d'),
           <span className="row" style={{ marginTop: 8 }}><input type="number" min="1" max="365" value={days} onChange={(e) => setDays(e.target.value)} style={{ maxWidth: 110 }} aria-label={t('over_days')} /> {t('over_days')} ({t.num(Math.ceil(286 / Math.max(1, days)))} {t('per_day')})</span>)}
         <ErrorMsg error={error} />
-        <button className="btn primary" disabled={type === 'pages' && !part}>{t('save')}</button>
+        <button className="btn primary">{t('save')}</button>
       </form>
     </Section>
   );
@@ -312,9 +283,7 @@ function DataAndAccount() {
 
 export default function Settings() {
   const { me, t } = useApp();
-  useEffect(() => {
-    if (location.hash === '#plan') setTimeout(() => document.getElementById('plan')?.scrollIntoView({ block: 'start' }), 300);
-  }, []);
+
   return (
     <div className="shell">
       <h1>{t('nav_settings')}</h1>

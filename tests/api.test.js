@@ -430,72 +430,91 @@ describe('reading progress, completion and time zones', () => {
   });
 });
 
-describe('family parts (fixed 6-6-9-9-9-9 page split) and page view', () => {
+describe('daily family parts (6-6-9-9-9-9 pages, chosen each day) and page view', () => {
   let app, admin, a, b;
   before(async () => {
     setClock('2026-12-10T12:00:00Z');
     ({ app } = await makeApp());
-    admin = await setupFamily(app);
+    admin = await setupFamily(app); // family time zone: Europe/London
     a = (await inviteAndJoin(app, admin, 'Maryam', 'maryam')).agent;
-    b = (await inviteAndJoin(app, admin, 'Ibrahim', 'ibrahim')).agent;
+    b = (await inviteAndJoin(app, admin, 'Ibrahim', 'ibrahim', '2580', 'America/Los_Angeles')).agent;
   });
 
-  test('the six parts cover pages 2-49 as 6,6,9,9,9,9 pages', async () => {
-    const { parts } = (await a.get('/api/family/parts')).body;
-    assert.deepEqual(parts.map((p) => [p.pageFrom, p.pageTo, p.pages]), [[2, 7, 6], [8, 13, 6], [14, 22, 9], [23, 31, 9], [32, 40, 9], [41, 49, 9]]);
-    assert.equal(parts[0].from, 1);
-    assert.equal(parts[5].to, 286);
-    for (let i = 1; i < 6; i++) assert.equal(parts[i].from, parts[i - 1].to + 1, 'no gaps or overlaps');
-    assert.ok(parts.every((p) => p.owner === null));
+  test('six parts cover pages 2-49 as 6,6,9,9,9,9 pages and all start free', async () => {
+    const r = (await a.get('/api/parts/today')).body;
+    assert.equal(r.date, '2026-12-10');
+    assert.deepEqual(r.parts.map((p) => [p.pageFrom, p.pageTo, p.pages]), [[2, 7, 6], [8, 13, 6], [14, 22, 9], [23, 31, 9], [32, 40, 9], [41, 49, 9]]);
+    assert.equal(r.parts[0].from, 1);
+    assert.equal(r.parts[5].to, 286);
+    for (let i = 1; i < 6; i++) assert.equal(r.parts[i].from, r.parts[i - 1].to + 1, 'no gaps or overlaps');
+    assert.ok(r.parts.every((p) => p.claim === null));
   });
 
-  test('choosing a part sets today\'s portion to those pages; a part belongs to one person', async () => {
-    assert.equal((await put(a, '/api/plan', { planType: 'pages', part: 2 })).status, 200);
-    const p = (await a.get('/api/progress')).body;
-    assert.deepEqual([p.portion.from, p.portion.to, p.portion.pageFrom, p.portion.pageTo, p.position], [49, 88, 8, 13, 49]);
-    assert.equal((await a.get('/api/me')).body.stats.part, 2);
-    const taken = await put(b, '/api/plan', { planType: 'pages', part: 2 });
+  test('taking a part shows it as taken to everyone; nobody else can take it', async () => {
+    const r = (await post(a, '/api/parts/2/claim', {})).body;
+    assert.deepEqual(r.mine, [2]);
+    const seen = (await b.get('/api/parts/today')).body;
+    assert.equal(seen.parts[1].claim.user.displayName, 'Maryam');
+    assert.equal(seen.parts[1].claim.done, false);
+    const taken = await post(b, '/api/parts/2/claim', {});
     assert.equal(taken.status, 409);
     assert.equal(taken.body.error, 'part_taken');
-    assert.equal((await put(b, '/api/plan', { planType: 'pages', part: 7 })).body.error, 'bad_part');
-    assert.equal((await put(a, '/api/plan', { planType: 'pages', part: 2 })).status, 200, 'keeping my own part is fine');
-    const { parts } = (await b.get('/api/family/parts')).body;
-    assert.equal(parts[1].owner.displayName, 'Maryam');
+    assert.equal((await post(b, '/api/parts/7/claim', {})).body.error, 'bad_part');
+    // A member may take more than one part (e.g. when someone is away).
+    assert.deepEqual((await post(b, '/api/parts/3/claim', {})).body.mine, [3]);
+    assert.deepEqual((await post(b, '/api/parts/4/claim', {})).body.mine, [3, 4]);
   });
 
-  test('completing a part records exactly its verses and stays on the same part tomorrow', async () => {
-    await put(a, '/api/progress', { verse: 60, seen: 70 });
-    const r = await post(a, '/api/completions/today', {});
-    assert.deepEqual([r.body.completion.from_verse, r.body.completion.to_verse], [49, 88]);
-    setClock('2026-12-11T12:00:00Z');
-    const p = (await a.get('/api/progress')).body;
-    assert.deepEqual([p.portion.from, p.portion.to, p.position, p.portion.percent], [49, 88, 49, 0]);
+  test('giving a part back; others cannot release it, the administrator can', async () => {
+    assert.equal((await del(a, '/api/parts/4/claim')).status, 403);
+    assert.deepEqual((await del(b, '/api/parts/4/claim')).body.mine, [3]);
+    await post(b, '/api/parts/4/claim', {});
+    assert.equal((await del(admin, '/api/parts/4/claim')).status, 200);
+    assert.equal((await b.get('/api/parts/today')).body.parts[3].claim, null);
   });
 
-  test('dashboard shows pages read today and celebrates when the whole Surah is read together', async () => {
-    // Admin takes parts 1 and 3-6 is not allowed (one part each), so use a "whole Surah" reader to fill the rest.
-    await put(b, '/api/plan', { planType: 'pages', part: 1 });
-    await post(a, '/api/completions/today', {});
-    await post(b, '/api/completions/today', {});
-    let d = (await admin.get('/api/family/dashboard')).body.shared;
-    assert.deepEqual(d.pagesReadToday, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+  test('marking a part read counts for streaks and the family coverage; undo works; a read part cannot be given back', async () => {
+    assert.equal((await post(a, '/api/parts/3/done', {})).body.error, 'part_not_yours');
+    const r = (await post(a, '/api/parts/2/done', {})).body;
+    assert.deepEqual(r.pagesReadToday, [8, 9, 10, 11, 12, 13]);
+    let me = (await a.get('/api/me')).body.stats;
+    assert.equal(me.doneToday, true);
+    assert.equal(me.streak, 1);
+    assert.equal((await del(a, '/api/parts/2/claim')).body.error, 'part_done');
+    await del(a, '/api/parts/2/done');
+    me = (await a.get('/api/me')).body.stats;
+    assert.equal(me.doneToday, false);
+    await post(a, '/api/parts/2/done', {});
+  });
+
+  test('the whole Surah read together is celebrated on the dashboard', async () => {
+    await post(b, '/api/parts/3/done', {});
+    for (const n of [1, 4, 5, 6]) await post(admin, `/api/parts/${n}/claim`, {});
+    let d = (await a.get('/api/family/dashboard')).body.shared;
     assert.equal(d.wholeSurahToday, false);
-    assert.equal(d.parts[0].owner.doneToday, true);
-    assert.equal(d.parts[2].owner, null);
-    await put(admin, '/api/plan', { planType: 'whole' });
-    await put(admin, '/api/progress', { verse: 280, seen: 286 });
-    await post(admin, '/api/completions/today', {});
-    d = (await admin.get('/api/family/dashboard')).body.shared;
+    assert.equal(d.parts[0].claim.user.displayName, 'Yusuf');
+    for (const n of [1, 4, 5, 6]) await post(admin, `/api/parts/${n}/done`, {});
+    d = (await a.get('/api/family/dashboard')).body.shared;
     assert.equal(d.pagesReadToday.length, 48);
     assert.equal(d.wholeSurahToday, true);
     assert.equal(d.wholeSurahDays, 1);
+    assert.equal(d.wholeSurahStreak, 1);
   });
 
-  test('removing a member frees their part', async () => {
-    const m = await inviteAndJoin(app, admin, 'Aisha', 'aisha');
-    await put(m.agent, '/api/plan', { planType: 'pages', part: 4 });
-    await del(admin, `/api/admin/members/${m.userId}`);
-    assert.equal((await put(a, '/api/plan', { planType: 'pages', part: 4 })).status, 200);
+  test('parts are free again the next family day (family time zone), and yesterday\'s choice is remembered', async () => {
+    setClock('2026-12-11T00:30:00Z'); // 00:30 in London: a new family day (still 10 Dec in Los Angeles)
+    const r = (await a.get('/api/parts/today')).body;
+    assert.equal(r.date, '2026-12-11');
+    assert.ok(r.parts.every((p) => p.claim === null));
+    assert.deepEqual(r.myYesterday, [2]);
+    assert.equal((await post(a, '/api/parts/2/claim', {})).status, 200);
+  });
+
+  test('the old "mark today complete" cannot undo a part reading', async () => {
+    setClock('2026-12-12T12:00:00Z');
+    await post(b, '/api/parts/5/claim', {});
+    await post(b, '/api/parts/5/done', {});
+    assert.equal((await del(b, '/api/completions/today')).status, 404);
   });
 
   test('reader layout preference (verse list or full page) is saved', async () => {
@@ -503,6 +522,15 @@ describe('family parts (fixed 6-6-9-9-9-9 page split) and page view', () => {
     assert.equal((await patch(a, '/api/me', { readerLayout: 'page' })).status, 200);
     assert.equal((await a.get('/api/me')).body.user.readerLayout, 'page');
     assert.equal((await patch(a, '/api/me', { readerLayout: 'scroll' })).status, 400);
+  });
+
+  test('removing a member deletes their part choices', async () => {
+    const { db, app: a2 } = await makeApp();
+    const adm = await setupFamily(a2);
+    const m = await inviteAndJoin(a2, adm, 'Temp', 'tempuser');
+    await post(m.agent, '/api/parts/1/claim', {});
+    await del(adm, `/api/admin/members/${m.userId}`);
+    assert.equal((await db.get('SELECT COUNT(*) AS n FROM part_claims')).n, 0);
   });
 });
 

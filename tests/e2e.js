@@ -110,22 +110,41 @@ test('bookmarking a verse', async () => {
   await page.context().close();
 });
 
-test('marking today complete updates the family dashboard', async () => {
+test('marking my part as read updates the family goal and dashboard', async () => {
   const page = await phone();
-  await signIn(page, 'aisha', '2468');
+  await signIn(page, 'aisha', '2468'); // took part 4 today, not read yet
   await page.waitForSelector('text=4 of 6 have read today');
-  await page.click('text=Mark today complete');
-  await page.waitForSelector('text=Completed today');
+  const before = await page.textContent('#goal-h ~ .row');
+  const row = page.locator('.part-row[data-part="4"]');
+  await row.locator('button:has-text("Mark as read")').click();
   await page.waitForSelector('text=5 of 6 have read today');
+  assert.notEqual(await page.textContent('#goal-h ~ .row'), before, 'pages read today went up');
   await page.click('nav >> text=Family');
   await page.waitForSelector('.member');
-  const aisha = page.locator('.member', { hasText: 'Aisha' });
-  assert.match(await aisha.textContent(), /Read today/);
+  assert.match(await page.locator('.member', { hasText: 'Aisha' }).textContent(), /Read today/);
   // Undo returns to the earlier state.
   await page.click('nav >> text=Home');
-  await page.click('button:has-text("Undo")');
-  await page.waitForSelector('text=Mark today complete');
+  await page.locator('.part-row[data-part="4"] button:has-text("Undo")').click();
+  await page.waitForSelector('.part-row[data-part="4"] button:has-text("Mark as read")');
   await page.context().close();
+});
+
+test('taking a part on Home shows it as taken to the rest of the family', async () => {
+  const omar = await phone();
+  await signIn(omar, 'omar', '2468'); // part 6 is still free today
+  const row = omar.locator('.part-row[data-part="6"]');
+  await row.locator('button:has-text("Take")').click();
+  await omar.waitForSelector('.part-row[data-part="6"] >> text=Uncle Omar (you)');
+  const maryam = await phone();
+  await signIn(maryam, 'maryam', '2468');
+  const seen = maryam.locator('.part-row[data-part="6"]');
+  await seen.waitFor();
+  assert.match(await seen.textContent(), /Uncle Omar/);
+  assert.equal(await seen.locator('button:has-text("Take")').count(), 0, 'cannot take a part someone else has');
+  // Give it back: it is free again for everyone.
+  await row.locator('button:has-text("Give back")').click();
+  await omar.waitForSelector('.part-row[data-part="6"] button:has-text("Take")');
+  await Promise.all([omar.context().close(), maryam.context().close()]);
 });
 
 test('members do not see family administration', async () => {
@@ -162,17 +181,10 @@ test('administrator removes a member, invites a new one, and they join from the 
   await newcomer.click('text=Join the family');
   await newcomer.waitForSelector('text=Assalamu alaikum, Khalid');
   await newcomer.waitForSelector('.tabbar');
-  // The newcomer chooses the part that Omar's removal freed (part 6, pages 41-49).
-  await newcomer.waitForSelector('text=Choose which part of Al-Baqarah');
-  await newcomer.click('a:has-text("Choose your part")');
-  await newcomer.waitForSelector('text=My part of the family’s daily reading');
-  await newcomer.check('input[name=plan][value=pages]');
-  assert.equal(await newcomer.isDisabled('input[name=part][value="1"]'), true, 'part 1 is taken');
-  await newcomer.check('input[name=part][value="6"]');
-  await newcomer.click('#plan button.primary');
-  await newcomer.waitForSelector('text=Saved');
-  await newcomer.click('nav >> text=Home');
-  await newcomer.waitForSelector('text=Part 6 · Pages 41–49');
+  // The newcomer takes today's free part straight from Home.
+  await newcomer.waitForSelector('text=Today’s family goal');
+  await newcomer.locator('.part-row[data-part="6"] button:has-text("Take")').click();
+  await newcomer.waitForSelector('.part-row[data-part="6"] >> text=Khalid (you)');
   // Link cannot be reused.
   const again = await phone();
   await again.goto(link);
@@ -235,45 +247,89 @@ test('family page shows the six parts and the pages read today', async () => {
   await page.context().close();
 });
 
-test('full page view shows one mushaf page at a time, turns pages, and is remembered', async () => {
+test('full page view fills the screen without scrolling, turns pages, and is remembered', async () => {
   const page = await phone();
-  await signIn(page, 'ibrahim', '2468'); // part 3: pages 14-22
-  await page.click('nav >> text=Read');
+  await signIn(page, 'ibrahim', '2468'); // took part 3 today: pages 14-22
+  await page.locator('.part-row[data-part="3"] a:has-text("Read")').click();
   await page.waitForSelector('.ayah');
   await page.click('button[aria-label="Full page view"]');
   await page.waitForSelector('.mushaf-page');
-  const pageNo = async () => Number((await page.textContent('.page-nav .small')).match(/Page (\d+)/)[1]);
-  const p0 = await pageNo();
-  assert.ok(p0 >= 14 && p0 <= 22, `opens inside my part (page ${p0})`);
+  const pageNo = async () => Number((await page.textContent('.page-screen .reader-tools .small')).match(/Page (\d+)/)[1]);
+  const fits = async () => page.evaluate(() => {
+    const t = document.querySelector('.mushaf-text');
+    const doc = document.scrollingElement;
+    return { text: t.scrollHeight <= t.clientHeight + 1, doc: doc.scrollHeight <= window.innerHeight + 1, font: parseFloat(t.style.fontSize) };
+  });
+  assert.equal(await pageNo(), 14, 'opens at the start of my part');
   assert.match(await page.textContent('.mushaf-head'), /Your part/);
+  await page.waitForTimeout(300);
+  let f = await fits();
+  assert.ok(f.text && f.doc, `page 14 fits the screen ${JSON.stringify(f)}`);
+  assert.ok(f.font >= 14, `text stays readable (${f.font}px)`);
   const check = async (p) => {
     const texts = await page.$$eval('.mushaf-text .ayah-inline .text', (els) => els.map((e) => e.textContent));
     const expected = QURAN.verses.filter((v) => v.page === p).map((v) => v.text);
     assert.deepEqual(texts, expected, `page ${p} text is exact`);
   };
-  await check(p0);
+  await check(14);
   await page.click('button[aria-label="Next page"]');
-  await page.waitForFunction((n) => document.querySelector('.page-nav .small').textContent.includes(`Page ${n}`), p0 + 1);
-  await check(p0 + 1);
-  assert.ok(await noHorizontalScroll(page));
+  await page.waitForFunction(() => document.querySelector('.page-screen .reader-tools .small').textContent.includes('Page 15'));
+  await check(15);
   // Swipe towards the right = next page (like an Arabic book).
   await page.evaluate(() => {
-    const el = document.querySelector('.mushaf-wrap');
+    const el = document.querySelector('.mushaf-page');
     const mk = (type, x) => { const t = new Touch({ identifier: 1, target: el, clientX: x, clientY: 300 }); return new TouchEvent(type, { bubbles: true, touches: type === 'touchend' ? [] : [t], changedTouches: [t] }); };
     el.dispatchEvent(mk('touchstart', 60)); el.dispatchEvent(mk('touchend', 300));
   });
-  await page.waitForFunction((n) => document.querySelector('.page-nav .small').textContent.includes(`Page ${n}`), p0 + 2);
+  await page.waitForFunction(() => document.querySelector('.page-screen .reader-tools .small').textContent.includes('Page 16'));
+  await page.waitForTimeout(300);
+  f = await fits();
+  assert.ok(f.text && f.doc, `page 16 fits ${JSON.stringify(f)}`);
   await page.waitForTimeout(2500); // autosave
-  await page.reload();
+  await page.goto(base + '/read');
   await page.waitForSelector('.mushaf-page');
-  assert.equal(await pageNo(), p0 + 2, 'reopens on the same page in page view');
-  // Opening page 2 shows the Surah heading and Basmala; the first verse is shown without it.
+  assert.equal(await pageNo(), 16, 'reopens on the same page in page view');
+  // Page 2 shows the Surah heading and Basmala, and still fits.
   await page.click('button[aria-label="Bookmarks"]');
   await page.fill('input[name=v]', '1');
   await page.click('.verse-actions button:has-text("Go")');
   await page.waitForSelector('.mushaf-opening .basmala');
+  await page.click('.verse-actions button:has-text("Close")');
   assert.equal(await page.textContent('#v-1 .text'), QURAN.verses[0].text.slice(QURAN.basmala.prefixLength));
+  await page.waitForTimeout(300);
+  f = await fits();
+  assert.ok(f.text && f.doc, `page 2 fits ${JSON.stringify(f)}`);
   await page.click('button[aria-label="Verse-by-verse view"]');
   await page.waitForSelector('.quran .ayah');
   await page.context().close();
+});
+
+test('page view fits every page on phone, tablet and desktop screens', async () => {
+  for (const vp of [{ width: 360, height: 640 }, { width: 390, height: 844 }, { width: 820, height: 1180 }, { width: 1280, height: 800 }]) {
+    const ctx = await browser.newContext({ viewport: vp });
+    const page = await ctx.newPage();
+    await signIn(page, 'zaynab', '2468');
+    await page.evaluate(() => fetch('/api/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'baqara' }, body: JSON.stringify({ readerLayout: 'page' }) }));
+    await page.goto(base + '/read');
+    await page.waitForSelector('.mushaf-page');
+    const worst = { font: 99 };
+    for (let p = 2; p <= 49; p++) {
+      if (p > 2 || (await page.textContent('.page-screen .reader-tools .small')).match(/Page (\d+)/)[1] !== '2') {
+        await page.click('button[aria-label="Bookmarks"]');
+        await page.fill('input[name=v]', String(QURAN.verses.find((v) => v.page === p).n));
+        await page.click('.verse-actions button:has-text("Go")');
+        await page.click('.verse-actions button:has-text("Close")');
+      }
+      await page.waitForFunction((n) => document.querySelector('.page-screen .reader-tools .small').textContent.includes(`Page ${n} `), p);
+      await page.waitForTimeout(80);
+      const f = await page.evaluate(() => {
+        const t = document.querySelector('.mushaf-text');
+        return { text: t.scrollHeight <= t.clientHeight + 1, doc: document.scrollingElement.scrollHeight <= window.innerHeight + 1, font: parseFloat(t.style.fontSize) };
+      });
+      assert.ok(f.text && f.doc, `page ${p} at ${vp.width}x${vp.height}: ${JSON.stringify(f)}`);
+      if (f.font < worst.font) Object.assign(worst, f, { p });
+    }
+    console.log(`  ${vp.width}x${vp.height}: smallest text ${worst.font}px (page ${worst.p})`);
+    await ctx.close();
+  }
 });
