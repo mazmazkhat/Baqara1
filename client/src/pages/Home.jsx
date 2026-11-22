@@ -6,6 +6,7 @@ import { Avatar, Bar } from '../components/ui.jsx';
 import { CompleteButton, encouragement } from '../components/complete.jsx';
 import { TodayParts } from '../components/parts.jsx';
 import { NotificationBanner } from '../components/notifications.jsx';
+import { NudgeButton } from '../components/nudge.jsx';
 import { IBook } from '../icons.jsx';
 
 export default function Home() {
@@ -41,6 +42,8 @@ export default function Home() {
       {parts ? <TodayParts data={parts} setData={setParts} />
         : partsErr ? <section className="card"><p className="muted">{t.err(partsErr.code)}</p><button className="btn" onClick={loadParts}>{t('retry')}</button></section>
           : <section className="card"><div className="skeleton" style={{ height: 22, width: '60%' }} /><div className="skeleton" style={{ height: 120 }} /></section>}
+
+      {parts && !parts.wholeSurahToday && <NudgeButton />}
 
       {parts && !hasPart && (
         <section className="card" aria-labelledby="own-h">

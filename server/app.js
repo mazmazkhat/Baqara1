@@ -16,7 +16,7 @@ import { QURAN, partByNumber } from './quran.js';
 import { familyDate, partsForDay, rangesForDay, wholeSurahDates, syncPartCompletion, yesterday } from './parts.js';
 import { timingSafeEqual } from 'node:crypto';
 import {
-  runReminders, celebrateIfComplete, sendToUser, testPayload, familyReminder, isTime, isQuietDays,
+  runReminders, celebrateIfComplete, sendToUser, testPayload, familyReminder, isTime, isQuietDays, nudgeAudience, sendNudge, NUDGE_GAP_MS,
 } from './notify.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -601,6 +601,35 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     const devices = (await db.get(
       'SELECT COUNT(DISTINCT s.user_id) AS n FROM push_subscriptions s JOIN family_memberships m ON m.user_id = s.user_id WHERE m.family_id = ?', req.user.family_id)).n;
     return { ...publicReminder(await familyReminder(db, req.user.family_id, iso())), membersWithNotifications: devices };
+  }));
+
+  // A kind reminder from the administrator to everyone who has not read yet today.
+  const nudgeKey = (fid) => `last_nudge_${fid}`;
+  async function nextNudgeAt(fid) {
+    const last = (await db.get('SELECT value FROM app_settings WHERE key = ?', nudgeKey(fid)))?.value;
+    if (!last) return null;
+    const next = new Date(new Date(last).getTime() + NUDGE_GAP_MS);
+    return next > now() ? next.toISOString() : null;
+  }
+
+  app.get('/api/admin/nudge', requireAdmin, route(async (req) => {
+    const a = await nudgeAudience(db, req.user.family_id, req.user.id, now());
+    return {
+      recipients: a.recipients.map((u) => u.display_name),
+      withoutNotifications: a.withoutNotifications.map((u) => u.display_name),
+      alreadyRead: a.alreadyRead,
+      nextAllowedAt: await nextNudgeAt(req.user.family_id),
+    };
+  }));
+
+  app.post('/api/admin/nudge', requireAdmin, route(async (req, res) => {
+    if (!notify) fail(503, 'push_unavailable');
+    const retryAt = await nextNudgeAt(req.user.family_id);
+    if (retryAt) return res.status(429).json({ error: 'nudge_too_soon', retryAt });
+    const message = str(req.body?.message, 140);
+    const r = await sendNudge(db, notify.send, { familyId: req.user.family_id, senderId: req.user.id, senderName: req.user.display_name, message, now: now() });
+    if (r.recipients.length) await db.run('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)', nudgeKey(req.user.family_id), iso());
+    return { ok: true, ...r, nextAllowedAt: await nextNudgeAt(req.user.family_id) };
   }));
 
   app.get('/api/admin/wakeup', requireAdmin, route(async (req) => {

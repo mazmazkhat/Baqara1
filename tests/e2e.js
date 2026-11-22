@@ -399,3 +399,31 @@ test('administrator controls the family reminders in Settings', async () => {
   assert.deepEqual([r.time, r.followup, r.quietDays, r.celebrate], ['20:15', true, '5', true]);
   await page.context().close();
 });
+
+test('administrator sends a kind reminder from Home to members who have not read', async () => {
+  // Aisha (not read yet today) has notifications on; some others have not turned them on.
+  const aisha = await phone();
+  await signIn(aisha, 'aisha', '2468');
+  await aisha.evaluate(() => fetch('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'baqara' }, body: JSON.stringify({ endpoint: 'https://push.example/aisha-phone', keys: { p256dh: 'BPk', auth: 'aa' } }) }));
+  assert.equal(await aisha.locator('button:has-text("Send a kind reminder")').count(), 0, 'members do not see the button');
+
+  const admin = await phone();
+  await signIn(admin, 'yusuf', '482915');
+  await admin.click('button:has-text("Send a kind reminder")');
+  await admin.waitForSelector('text=It will reach:');
+  const panel = await admin.textContent('.nudge-panel');
+  assert.match(panel, /It will reach: Aisha/);
+  assert.match(panel, /Notifications not turned on yet: /); // e.g. members who joined but have not allowed notifications
+  pushedE2E.length = 0;
+  await admin.fill('.nudge-panel textarea', 'Bismillah, let us complete the Surah together today 🌿');
+  await admin.click('button:has-text("Send reminder")');
+  await admin.waitForSelector('text=Kind reminder sent to 1.');
+  assert.equal(pushedE2E.length, 1);
+  assert.equal(pushedE2E[0].sub.endpoint, 'https://push.example/aisha-phone');
+  assert.equal(pushedE2E[0].payload.body, 'Bismillah, let us complete the Surah together today 🌿 Your part (Part 4) is waiting. — Yusuf');
+  // A second one straight away is refused kindly.
+  await admin.click('button:has-text("Send a kind reminder")');
+  await admin.waitForSelector('text=You can send another kind reminder after');
+  assert.equal(await admin.isDisabled('button:has-text("Send reminder")'), true);
+  await Promise.all([aisha.context().close(), admin.context().close()]);
+});

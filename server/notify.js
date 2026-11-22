@@ -25,6 +25,10 @@ const TEXT = {
     wholeBody: 'Together the family completed Surah Al-Baqarah today.',
     testTitle: 'Notifications are on',
     testBody: 'This is how your daily reading reminder will look.',
+    nudgeTitle: 'A kind reminder 🤍',
+    nudgeDefault: 'Our family reading is waiting for you whenever you’re ready.',
+    nudgePart: (n) => `Your part (Part ${n}) is waiting.`,
+    nudgeFree: (n) => `Part ${n} is still free.`,
   },
   ar: {
     dailyTitle: 'قراءة العائلة',
@@ -37,6 +41,10 @@ const TEXT = {
     wholeBody: 'أتمّت العائلة سورة البقرة معًا اليوم.',
     testTitle: 'التنبيهات مفعّلة',
     testBody: 'هكذا سيظهر تذكير القراءة اليومي.',
+    nudgeTitle: 'تذكير لطيف 🤍',
+    nudgeDefault: 'قراءة العائلة بانتظارك متى ما كنت مستعدًا.',
+    nudgePart: (n) => `جزؤك (الجزء ${toArabicDigits(n)}) بانتظارك.`,
+    nudgeFree: (n) => `الجزء ${toArabicDigits(n)} ما زال متاحًا.`,
   },
 };
 const text = (locale) => TEXT[locale] || TEXT.en;
@@ -205,3 +213,45 @@ export async function celebrateIfComplete(db, send, familyId, fDate, now) {
 }
 
 export const testPayload = (locale) => ({ title: text(locale).testTitle, body: text(locale).testBody, url: '/', tag: 'test' });
+
+// ---------------- a kind reminder sent by the administrator ----------------
+
+export const NUDGE_GAP_MS = 2 * 3600 * 1000; // at most one kind reminder every 2 hours
+
+/** Who would receive a kind reminder now: members (not the sender) who have not read today. */
+export async function nudgeAudience(db, familyId, senderId, now) {
+  const members = await db.all(
+    `SELECT u.id, u.display_name, u.timezone, u.locale,
+            EXISTS (SELECT 1 FROM push_subscriptions s WHERE s.user_id = u.id) AS has_device
+       FROM users u JOIN family_memberships m ON m.user_id = u.id
+      WHERE m.family_id = ? AND m.status = 'active' AND u.id != ? ORDER BY m.sort_order, m.id`, familyId, senderId);
+  const notRead = [];
+  let alreadyRead = 0;
+  for (const u of members) {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: u.timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+    const read = await db.get('SELECT 1 AS x FROM daily_completions WHERE user_id = ? AND local_date = ?', u.id, today);
+    if (read) alreadyRead++; else notRead.push(u);
+  }
+  return {
+    recipients: notRead.filter((u) => u.has_device),
+    withoutNotifications: notRead.filter((u) => !u.has_device),
+    alreadyRead,
+  };
+}
+
+/** Send the kind reminder: the administrator's own words (or a gentle default), signed with their name. */
+export async function sendNudge(db, send, { familyId, senderId, senderName, message, now }) {
+  const audience = await nudgeAudience(db, familyId, senderId, now);
+  const family = await db.get('SELECT id, timezone FROM families WHERE id = ?', familyId);
+  const parts = await partsForDay(db, familyId, familyDate(family, now));
+  const free = parts.find((p) => !p.claim);
+  let sent = 0;
+  for (const u of audience.recipients) {
+    const T = text(u.locale);
+    const mine = parts.find((p) => p.claim?.user.id === u.id && !p.claim.done);
+    const extra = mine ? T.nudgePart(mine.number) : free ? T.nudgeFree(free.number) : '';
+    const body = `${message || T.nudgeDefault} ${extra} — ${senderName}`.replace(/\s+/g, ' ').trim();
+    if (await sendToUser(db, send, u.id, { title: T.nudgeTitle, body, url: mine ? `/read?part=${mine.number}` : '/', tag: 'nudge' })) sent++;
+  }
+  return { sent, recipients: audience.recipients.map((u) => u.display_name), withoutNotifications: audience.withoutNotifications.map((u) => u.display_name), alreadyRead: audience.alreadyRead };
+}

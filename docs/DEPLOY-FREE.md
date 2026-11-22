@@ -60,7 +60,9 @@ Each family member allows notifications on their own phone once, from the prompt
 * **Android:** open the app in Chrome.
 * **iPhone:** first add the app to the Home Screen (Safari → Share ⬆️ → **Add to Home Screen**; iOS 16.4 or newer), then open it from the new icon.
 
-If someone taps **Not now**, the prompt comes back a week later. The administrator can tap **Send a test** under **This phone**.
+If someone taps **Not now**, the prompt comes back a week later.
+
+Any time, the administrator can tap **Send a kind reminder** on Home. It goes only to members who haven't read yet today, signed with the administrator's name (at most once every 2 hours). It also lists who hasn't turned notifications on, so you can message them directly. The administrator can tap **Send a test** under **This phone**.
 
 ## Looking after it
 

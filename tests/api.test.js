@@ -707,6 +707,80 @@ describe('notifications (gentle reminders, set by the family administrator)', ()
   });
 });
 
+describe('kind reminder sent by the administrator', () => {
+  let app, admin, maryam, ibrahim, aisha;
+  const sub = (name) => ({ endpoint: `https://push.example/${name}`, keys: { p256dh: 'BPk', auth: 'aa' } });
+  const sentTo = (name) => pushed.filter((p) => p.endpoint.endsWith(`/${name}`));
+  before(async () => {
+    setClock('2026-12-14T10:00:00Z');
+    ({ app } = await makeApp());
+    admin = await setupFamily(app);
+    maryam = (await inviteAndJoin(app, admin, 'Maryam', 'maryam')).agent;
+    ibrahim = (await inviteAndJoin(app, admin, 'Ibrahim', 'ibrahim', '2580', 'Asia/Riyadh')).agent;
+    aisha = (await inviteAndJoin(app, admin, 'Aisha', 'aisha')).agent; // no notifications on her phone
+    for (const [a, n] of [[admin, 'yusuf'], [maryam, 'maryam'], [ibrahim, 'ibrahim']]) await post(a, '/api/push/subscribe', sub(n));
+    await post(maryam, '/api/parts/1/claim', {});
+    await post(maryam, '/api/parts/1/done', {}); // Maryam has already read today
+    await post(ibrahim, '/api/parts/3/claim', {}); // Ibrahim took part 3, not read yet
+  });
+
+  test('only the administrator can send it', async () => {
+    assert.equal((await post(maryam, '/api/admin/nudge', {})).status, 403);
+    assert.equal((await maryam.get('/api/admin/nudge')).status, 403);
+  });
+
+  test('preview shows who will receive it, who has no notifications, and who already read', async () => {
+    const p = (await admin.get('/api/admin/nudge')).body;
+    assert.deepEqual(p.recipients, ['Ibrahim']);
+    assert.deepEqual(p.withoutNotifications, ['Aisha']);
+    assert.equal(p.alreadyRead, 1);
+    assert.equal(p.nextAllowedAt, null);
+  });
+
+  test('it reaches members who have not read, signed with the sender\'s name; not the sender, not those who read', async () => {
+    pushed.length = 0;
+    const r = (await post(admin, '/api/admin/nudge', {})).body;
+    assert.equal(r.sent, 1);
+    assert.equal(sentTo('ibrahim').length, 1);
+    assert.equal(sentTo('maryam').length, 0, 'already read');
+    assert.equal(sentTo('yusuf').length, 0, 'not the sender');
+    const n = sentTo('ibrahim')[0];
+    assert.equal(n.title, 'A kind reminder 🤍');
+    assert.equal(n.body, 'Our family reading is waiting for you whenever you’re ready. Your part (Part 3) is waiting. — Yusuf');
+    assert.equal(n.url, '/read?part=3');
+    assert.ok(r.nextAllowedAt);
+  });
+
+  test('at most once every 2 hours', async () => {
+    const again = await post(admin, '/api/admin/nudge', {});
+    assert.equal(again.status, 429);
+    assert.equal(again.body.error, 'nudge_too_soon');
+    setClock('2026-12-14T12:01:00Z');
+    assert.equal((await post(admin, '/api/admin/nudge', { message: 'Bismillah, let us finish the Surah together today 🌿' })).status, 200);
+    assert.match(sentTo('ibrahim').at(-1).body, /^Bismillah, let us finish the Surah together today 🌿 Your part \(Part 3\) is waiting\. — Yusuf$/);
+  });
+
+  test('Arabic readers get it in Arabic', async () => {
+    setClock('2026-12-14T14:05:00Z');
+    await patch(ibrahim, '/api/me', { locale: 'ar' });
+    await post(admin, '/api/admin/nudge', {});
+    const n = sentTo('ibrahim').at(-1);
+    assert.equal(n.title, 'تذكير لطيف 🤍');
+    assert.equal(n.body, 'قراءة العائلة بانتظارك متى ما كنت مستعدًا. جزؤك (الجزء ٣) بانتظارك. — Yusuf');
+  });
+
+  test('when nobody is left to remind, nothing is sent and the limit is not used up', async () => {
+    setClock('2026-12-14T16:10:00Z');
+    await post(ibrahim, '/api/parts/3/done', {});
+    pushed.length = 0;
+    const r = (await post(admin, '/api/admin/nudge', {})).body;
+    assert.equal(r.sent, 0);
+    assert.deepEqual(r.withoutNotifications, ['Aisha']);
+    assert.equal(r.nextAllowedAt, null);
+    assert.equal(pushed.length, 0);
+  });
+});
+
 describe('web push delivery (real encryption, local stand-in push service)', () => {
   test('payload is encrypted and signed; an expired subscription is reported as gone', async () => {
     const https = await import('node:https');
