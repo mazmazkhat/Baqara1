@@ -100,5 +100,5 @@ No advertising, analytics or tracking scripts are used.
 ## 7. Roadmap
 
 * **Phase 1 (this version):** authentication & invitations, six-member family, verified Quran reader (text size, light/dark, bookmarks, autosave, continue), reading plans, **daily family parts (6-6-9-9-9-9 pages, taken on Home each day, visible to all) with the whole Surah as the family's daily goal**, **full mushaf page view that fits the screen**, daily completion with undo, streaks, gentle missed-day wording, family dashboard with weekly/monthly history, English/Arabic, export & delete.
-* **Phase 2:** web-push reminders (family default + personal override, quiet days, one gentle follow-up at most), verse audio, translations, reflections (private / shared with family), family goals.
+* **Phase 2:** ✅ web-push reminders (family default + personal override, quiet days, one gentle follow-up at most, celebration); next: verse audio, translations, reflections (private / shared with family), family goals.
 * **Phase 3:** optional profile photos, offline reading of the cached text, backups helper.

@@ -111,6 +111,43 @@ CREATE TABLE IF NOT EXISTS part_claims (
 );
 CREATE INDEX IF NOT EXISTS idx_part_claims_user ON part_claims(user_id, local_date);
 
+-- Notifications (web push). Gentle by design: at most a daily reminder, one optional follow-up,
+-- and one celebration when the family completes the Surah.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key    TEXT PRIMARY KEY,                         -- e.g. vapid_public, vapid_private, cron_key
+  value  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS family_reminders (
+  family_id      INTEGER PRIMARY KEY REFERENCES families(id) ON DELETE CASCADE,
+  enabled        INTEGER NOT NULL DEFAULT 1,
+  time_local     TEXT NOT NULL DEFAULT '19:00',      -- each member's own time zone
+  message        TEXT NOT NULL DEFAULT '',            -- '' = the standard gentle message
+  quiet_days     TEXT NOT NULL DEFAULT '',            -- e.g. '5' (0 = Sunday ... 6 = Saturday)
+  followup_time  TEXT NOT NULL DEFAULT '21:30',
+  updated_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS member_reminders (
+  user_id           INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  enabled           INTEGER NOT NULL DEFAULT 1,
+  use_family_time   INTEGER NOT NULL DEFAULT 1,
+  time_local        TEXT,                           -- own time when use_family_time = 0
+  quiet_days        TEXT,                           -- NULL = the family's quiet days
+  followup_enabled  INTEGER NOT NULL DEFAULT 0,     -- gentle evening reminder if today's part is not read
+  followup_time     TEXT,                           -- NULL = the family's follow-up time
+  celebrate         INTEGER NOT NULL DEFAULT 1,     -- tell me when the family completes the Surah
+  updated_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_log (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,                        -- 'daily' | 'followup' | 'whole'
+  local_date  TEXT NOT NULL,
+  sent_at     TEXT NOT NULL,
+  PRIMARY KEY (user_id, kind, local_date)
+);
+
 -- Phase 2 tables (schema ready; UI/API arrive in later versions) ------------------------
 
 CREATE TABLE IF NOT EXISTS reflections (

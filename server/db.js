@@ -95,7 +95,7 @@ export async function openDb(url = process.env.DATABASE_URL || 'file:var/baqara.
 /** Remove a person and everything that belongs to them (explicit, so it does not depend on FK enforcement). */
 export async function deleteUserData(db, userId) {
   await db.tx(async (t) => {
-    for (const table of ['part_claims', 'sessions', 'invitations', 'reading_plans', 'reading_progress', 'daily_completions', 'bookmarks',
+    for (const table of ['member_reminders', 'notification_log', 'part_claims', 'sessions', 'invitations', 'reading_plans', 'reading_progress', 'daily_completions', 'bookmarks',
       'reflections', 'reminders', 'push_subscriptions', 'family_memberships']) {
       await t.run(`DELETE FROM ${table} WHERE user_id = ?`, userId);
     }

@@ -13,9 +13,11 @@ const setClock = (iso) => { clock = new Date(iso); };
 
 const TMP = mkdtempSync(path.join(tmpdir(), 'baqara-api-'));
 let dbCount = 0;
+const pushed = []; // notifications "delivered" by the fake push sender in tests
 async function makeApp() {
   const db = await openDb(`file:${path.join(TMP, `t${++dbCount}.db`)}`);
-  const app = createApp({ db, now: () => clock, setupCode: 'SETUP-123' });
+  const notify = { publicKey: 'test-public-key', cronKey: 'wake-key-123', send: async (sub, payload) => { pushed.push({ endpoint: sub.endpoint, ...payload }); return sub.endpoint.includes('gone') ? 'gone' : 'ok'; } };
+  const app = createApp({ db, now: () => clock, setupCode: 'SETUP-123', notify });
   return { db, app };
 }
 const post = (agent, url, body) => agent.post(url).set(H).send(body);
@@ -554,5 +556,176 @@ describe('upgrading an existing database', () => {
     assert.equal((await db.get('SELECT reader_layout FROM users WHERE id = 1')).reader_layout, 'list');
     // Opening again is a no-op.
     await openDb(`file:${file}`);
+  });
+});
+
+describe('notifications (gentle reminders)', () => {
+  let app, db, admin, maryam, ibrahim;
+  const sub = (name) => ({ endpoint: `https://push.example/${name}`, keys: { p256dh: 'BPk', auth: 'aa' } });
+  const tick = (key = 'wake-key-123') => request(app).get(`/api/cron/tick?key=${key}`);
+  const sentTo = (name) => pushed.filter((p) => p.endpoint.endsWith(`/${name}`));
+  before(async () => {
+    setClock('2026-12-14T10:00:00Z'); // Monday
+    ({ app, db } = await makeApp());
+    admin = await setupFamily(app); // Europe/London
+    maryam = (await inviteAndJoin(app, admin, 'Maryam', 'maryam', '2580', 'Europe/London')).agent;
+    ibrahim = (await inviteAndJoin(app, admin, 'Ibrahim', 'ibrahim', '2580', 'Asia/Riyadh')).agent;
+  });
+
+  test('devices subscribe; a test notification reaches them; no devices gives a clear error', async () => {
+    assert.equal((await post(ibrahim, '/api/push/test', {})).body.error, 'no_devices');
+    assert.equal((await post(maryam, '/api/push/subscribe', { endpoint: 'http://insecure', keys: {} })).status, 400);
+    assert.equal((await post(maryam, '/api/push/subscribe', sub('maryam'))).status, 200);
+    assert.equal((await post(ibrahim, '/api/push/subscribe', sub('ibrahim'))).status, 200);
+    pushed.length = 0;
+    assert.equal((await post(maryam, '/api/push/test', {})).body.delivered, 1);
+    assert.equal(pushed[0].title, 'Notifications are on');
+    assert.equal((await maryam.get('/api/push/key')).body.publicKey, 'test-public-key');
+    assert.equal((await maryam.get('/api/reminders')).body.devices, 1);
+  });
+
+  test('the wake-up link needs the secret key', async () => {
+    assert.equal((await tick('wrong')).status, 403);
+    assert.equal((await request(app).get('/api/cron/tick')).status, 403);
+    assert.equal((await tick()).status, 200);
+  });
+
+  test('daily reminder goes out at the family time in each person\'s own time zone, once', async () => {
+    pushed.length = 0;
+    setClock('2026-12-14T15:30:00Z'); // 15:30 London, 18:30 Riyadh: before 19:00 for both
+    await tick();
+    assert.equal(pushed.length, 0);
+    setClock('2026-12-14T16:05:00Z'); // 19:05 in Riyadh
+    await tick();
+    assert.equal(sentTo('ibrahim').length, 1);
+    assert.equal(sentTo('maryam').length, 0);
+    assert.match(sentTo('ibrahim')[0].body, /It is time for today’s family Quran reading\. 0 of 6 parts taken · 0 of 48 pages read today\. Part 1 is still free\./);
+    setClock('2026-12-14T19:02:00Z'); // 19:02 London
+    await tick();
+    await tick();
+    assert.equal(sentTo('maryam').length, 1, 'never twice in a day');
+    assert.equal(sentTo('ibrahim').length, 1);
+  });
+
+  test('no reminder for someone who has already read today', async () => {
+    pushed.length = 0;
+    setClock('2026-12-15T10:00:00Z');
+    await post(maryam, '/api/parts/2/claim', {});
+    await post(maryam, '/api/parts/2/done', {});
+    setClock('2026-12-15T19:10:00Z');
+    await tick();
+    assert.equal(sentTo('maryam').length, 0);
+  });
+
+  test('personal time, quiet days and turning reminders off are respected', async () => {
+    pushed.length = 0;
+    assert.equal((await put(ibrahim, '/api/reminders/me', { useFamilyTime: false, time: '25:00' })).status, 400);
+    await put(ibrahim, '/api/reminders/me', { useFamilyTime: false, time: '06:30', quietDays: '3' }); // Wednesday quiet
+    setClock('2026-12-16T03:40:00Z'); // Wed 06:40 Riyadh
+    await tick();
+    assert.equal(sentTo('ibrahim').length, 0, 'quiet day');
+    setClock('2026-12-17T03:40:00Z'); // Thu 06:40 Riyadh
+    await tick();
+    assert.equal(sentTo('ibrahim').length, 1, 'own time');
+    await put(ibrahim, '/api/reminders/me', { enabled: false });
+    setClock('2026-12-18T03:40:00Z');
+    await tick();
+    assert.equal(sentTo('ibrahim').length, 1, 'turned off');
+    await put(ibrahim, '/api/reminders/me', { enabled: true, useFamilyTime: true, quietDays: null });
+  });
+
+  test('a reminder is not sent more than 4 hours late (e.g. if the server was asleep)', async () => {
+    pushed.length = 0;
+    setClock('2026-12-19T20:30:00Z'); // 23:30 Riyadh: 4.5 h after 19:00
+    await tick();
+    assert.equal(sentTo('ibrahim').length, 0);
+  });
+
+  test('optional evening follow-up only when my part is taken but not read', async () => {
+    pushed.length = 0;
+    await put(maryam, '/api/reminders/me', { followup: true, followupTime: '21:30' });
+    setClock('2026-12-20T10:00:00Z');
+    await post(maryam, '/api/parts/4/claim', {});
+    setClock('2026-12-20T19:00:00Z');
+    await tick(); // daily
+    setClock('2026-12-20T21:35:00Z');
+    await tick(); // follow-up
+    await tick();
+    const m = sentTo('maryam');
+    assert.deepEqual(m.map((x) => x.tag), ['daily', 'followup']);
+    assert.match(m[1].body, /Part 4/);
+    assert.equal(m[1].url, '/read?part=4');
+  });
+
+  test('celebration when the whole Surah is completed, once, for those who want it', async () => {
+    pushed.length = 0;
+    setClock('2026-12-21T10:00:00Z');
+    await put(ibrahim, '/api/reminders/me', { celebrate: false });
+    for (const n of [1, 2, 3, 4, 5]) { await post(admin, `/api/parts/${n}/claim`, {}); await post(admin, `/api/parts/${n}/done`, {}); }
+    assert.equal(pushed.length, 0);
+    await post(maryam, '/api/parts/6/claim', {});
+    await post(maryam, '/api/parts/6/done', {});
+    assert.equal(sentTo('maryam').filter((x) => x.tag === 'whole').length, 1);
+    assert.equal(sentTo('ibrahim').length, 0, 'opted out');
+    await del(maryam, '/api/parts/6/done');
+    await post(maryam, '/api/parts/6/done', {});
+    assert.equal(sentTo('maryam').filter((x) => x.tag === 'whole').length, 1, 'only once a day');
+  });
+
+  test('Arabic speakers get Arabic reminders', async () => {
+    pushed.length = 0;
+    await patch(ibrahim, '/api/me', { locale: 'ar' });
+    setClock('2026-12-22T16:10:00Z'); // 19:10 Riyadh
+    await tick();
+    assert.match(sentTo('ibrahim')[0].body, /حان وقت قراءة العائلة اليومية/);
+    assert.match(sentTo('ibrahim')[0].body, /من ٦ أجزاء/);
+  });
+
+  test('family defaults are admin-only and validated; expired devices are forgotten', async () => {
+    assert.equal((await put(maryam, '/api/admin/reminders', { time: '20:00' })).status, 403);
+    assert.equal((await put(admin, '/api/admin/reminders', { time: '7pm' })).status, 400);
+    assert.equal((await put(admin, '/api/admin/reminders', { time: '20:15', message: 'Time for our Baqarah reading 🌿', quietDays: '5' })).status, 200);
+    const r = (await maryam.get('/api/reminders')).body;
+    assert.deepEqual([r.family.time, r.family.message, r.family.quietDays], ['20:15', 'Time for our Baqarah reading 🌿', '5']);
+    assert.match((await admin.get('/api/admin/wakeup')).body.url, /\/api\/cron\/tick\?key=wake-key-123$/);
+    await post(maryam, '/api/push/subscribe', sub('gone-phone'));
+    await post(maryam, '/api/push/test', {});
+    assert.equal((await db.get("SELECT COUNT(*) AS n FROM push_subscriptions WHERE endpoint LIKE '%gone%'")).n, 0);
+  });
+});
+
+describe('web push delivery (real encryption, local stand-in push service)', () => {
+  test('payload is encrypted and signed; an expired subscription is reported as gone', async () => {
+    const https = await import('node:https');
+    const crypto = await import('node:crypto');
+    const { execFileSync } = await import('node:child_process');
+    const keyFile = path.join(TMP, 'push.key');
+    const certFile = path.join(TMP, 'push.crt');
+    execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', keyFile, '-out', certFile, '-days', '1', '-subj', '/CN=localhost'], { stdio: 'ignore' });
+    const { readFileSync } = await import('node:fs');
+    const { webPushSender } = await import('../server/notify.js');
+    const wp = await import('web-push');
+    const got = [];
+    const srv = https.createServer({ key: readFileSync(keyFile), cert: readFileSync(certFile) }, (req, res) => {
+      let n = 0;
+      req.on('data', (c) => { n += c.length; });
+      req.on('end', () => { got.push({ url: req.url, auth: req.headers.authorization, enc: req.headers['content-encoding'], ttl: req.headers.ttl, bytes: n }); res.writeHead(req.url.includes('expired') ? 410 : 201); res.end(); });
+    });
+    await new Promise((r) => srv.listen(0, r));
+    const port = srv.address().port;
+    const keys = wp.generateVAPIDKeys();
+    const ecdh = crypto.createECDH('prime256v1'); ecdh.generateKeys();
+    const subKeys = { p256dh: ecdh.getPublicKey('base64url'), auth: crypto.randomBytes(16).toString('base64url') };
+    const agent = new https.Agent({ ca: readFileSync(certFile), keepAlive: false });
+    const send = webPushSender({ publicKey: keys.publicKey, privateKey: keys.privateKey, subject: 'mailto:test@example.org', agent });
+    assert.equal(await send({ endpoint: `https://localhost:${port}/push/abc`, keys: subKeys }, { title: 'Hi', body: 'x' }), 'ok');
+    assert.equal(await send({ endpoint: `https://localhost:${port}/expired`, keys: subKeys }, { title: 'Hi' }), 'gone');
+    agent.destroy();
+    srv.closeAllConnections?.();
+    srv.close();
+    assert.match(got[0].auth, /^vapid t=.+, k=/);
+    assert.equal(got[0].enc, 'aes128gcm');
+    assert.equal(got[0].ttl, String(6 * 3600));
+    assert.ok(got[0].bytes > 50, 'encrypted body sent');
   });
 });

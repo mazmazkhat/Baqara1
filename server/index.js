@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto';
 import { openDb, cleanSetting } from './db.js';
 import { createApp } from './app.js';
 import { diagnoseTurso } from './turso-diagnose.js';
+import { ensureNotifyKeys, webPushSender, runReminders } from './notify.js';
 
 const PORT = Number(process.env.PORT || 3000);
 const prod = process.env.NODE_ENV === 'production';
@@ -32,7 +33,21 @@ const needsSetup = (await db.get('SELECT COUNT(*) AS n FROM families')).n === 0;
 // server cannot be claimed by a stranger. Set SETUP_CODE yourself or read it from the log.
 const setupCode = needsSetup ? process.env.SETUP_CODE || String(randomInt(100000, 999999)) + String(randomInt(100000, 999999)) : null;
 
-const app = createApp({ db, setupCode, secureCookies: prod || process.env.SECURE_COOKIES === '1', serveClient: true });
+// Push notifications: keys are created once and stored in the database.
+const keys = await ensureNotifyKeys(db);
+const subject = process.env.VAPID_SUBJECT || process.env.RENDER_EXTERNAL_URL || 'mailto:family-reading@example.org';
+const notify = { ...keys, send: webPushSender({ publicKey: keys.publicKey, privateKey: keys.privateKey, subject }) };
+
+const app = createApp({ db, setupCode, secureCookies: prod || process.env.SECURE_COOKIES === '1', serveClient: true, notify });
+
+// While the server is awake, check for due reminders every minute. (On a free host that sleeps,
+// an outside wake-up service calls /api/cron/tick every 15 minutes — see Settings → Family administration.)
+let running = false;
+setInterval(() => {
+  if (running) return;
+  running = true;
+  runReminders(db, notify.send, new Date()).catch((e) => console.error('reminders', e.message)).finally(() => { running = false; });
+}, 60_000).unref();
 app.listen(PORT, () => {
   const where = (process.env.DATABASE_URL || 'file:var/baqara.db').replace(/\?.*$/, '');
   console.log(`Baqarah Together listening on port ${PORT} (database: ${where.startsWith('libsql:') ? 'Turso' : where})`);

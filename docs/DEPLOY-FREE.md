@@ -43,6 +43,23 @@ You need a GitHub account with this project in it, because Render copies the app
 4. Go to **Settings** → **Family administration** → **Add a family member**. Type their name, tap **Create invite link**, and send the link (WhatsApp, SMS…). Each link works once, for 7 days.
 5. Ask everyone to open the app in their phone's browser and choose **Add to Home Screen**, so it opens like a normal app.
 
+## Part 4: Turn on reminders (once, about 2 minutes)
+
+Free hosting sleeps when nobody is using the app, and a sleeping app can't send reminders on time. A free "wake-up" service fixes this. It also means family members no longer wait a minute for the app to open.
+
+1. In the app, go to **Settings** → **Family administration** → **Keep reminders on time**, and tap **Copy** next to the link.
+2. Go to **cron-job.org**, create a free account, and tap **Create cronjob**.
+3. Paste the link as the **URL**, choose **every 15 minutes**, and **Save**.
+4. Back in the app, the same section shows **Last wake-up: …** within 15 minutes.
+
+Keep that link private: it only checks for due reminders, but there is no need to share it.
+
+Each family member then turns notifications on for their own phone:
+* **Android:** open the app in Chrome, then **Settings** → **Turn on notifications** → **Allow**.
+* **iPhone:** first add the app to the Home Screen (Safari → Share ⬆️ → **Add to Home Screen**; iOS 16.4 or newer). Open it from the new icon, then **Settings** → **Turn on notifications** → **Allow**.
+
+Tap **Send a test** to check it works.
+
 ## Looking after it
 
 * **Backups:** once a month, go to **Settings** → **Family administration** → **Download family backup**, and keep the file somewhere safe.

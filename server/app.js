@@ -14,6 +14,10 @@ import {
 } from './reading.js';
 import { QURAN, partByNumber } from './quran.js';
 import { familyDate, partsForDay, rangesForDay, wholeSurahDates, syncPartCompletion, yesterday } from './parts.js';
+import { timingSafeEqual } from 'node:crypto';
+import {
+  runReminders, celebrateIfComplete, sendToUser, testPayload, familyReminder, memberReminder, effective, isTime, isQuietDays,
+} from './notify.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const INVITE_DAYS = 7;
@@ -39,7 +43,8 @@ const int = (v) => (typeof v === 'number' || (typeof v === 'string' && /^\d+$/.t
  * @param {string|null} [o.setupCode] one-time code required to create the first family
  * @param {boolean} [o.secureCookies]
  */
-export function createApp({ db, now = () => new Date(), setupCode = null, secureCookies = false, serveClient = false }) {
+export function createApp({ db, now = () => new Date(), setupCode = null, secureCookies = false, serveClient = false, notify = null }) {
+  // notify = { publicKey, cronKey, send(subscription, payload) } — push notifications (optional in tests)
   const app = express();
   const ipLimiter = new IpLimiter();
   app.set('trust proxy', 1);
@@ -258,6 +263,15 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     return { ok: true };
   }));
 
+  // ---------- reminders wake-up (called by an outside service every ~15 minutes, and by the server itself) ----------
+  const sameKey = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  app.get('/api/cron/tick', route(async (req) => {
+    if (!notify || !sameKey(req.query.key, notify.cronKey)) fail(403, 'bad_key');
+    const sent = await runReminders(db, notify.send, now());
+    await db.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('last_wakeup', ?)", iso());
+    return { ok: true, sent };
+  }));
+
   // ---------- everything below requires a signed-in family member ----------
   app.use('/api', requireUser);
 
@@ -434,6 +448,7 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
       await t.run('UPDATE part_claims SET done_at = ? WHERE id = ?', done ? iso() : null, c.id);
       await syncPartCompletion(t, req.user, family.id, localDate(req.user.timezone, now()), date, iso());
     });
+    if (done && notify) await celebrateIfComplete(db, notify.send, family.id, date, now()).catch((e) => console.error('celebrate', e));
     return todayParts(req);
   }
   app.post('/api/parts/:n/done', route((req) => setPartDone(req, true)));
@@ -530,7 +545,90 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     };
   }));
 
+  // ---------- notifications ----------
+  const publicReminder = (r) => ({ enabled: Boolean(r.enabled), time: r.time_local, message: r.message, quietDays: r.quiet_days, followupTime: r.followup_time });
+
+  app.get('/api/push/key', route(() => {
+    if (!notify) fail(503, 'push_unavailable');
+    return { publicKey: notify.publicKey };
+  }));
+
+  app.post('/api/push/subscribe', route(async (req) => {
+    const { endpoint, keys } = req.body || {};
+    if (typeof endpoint !== 'string' || !/^https:\/\//.test(endpoint) || endpoint.length > 1000
+      || typeof keys?.p256dh !== 'string' || typeof keys?.auth !== 'string') fail(400, 'bad_subscription');
+    // One device belongs to one person: re-subscribing a shared phone moves it to whoever is signed in.
+    await db.run(
+      `INSERT INTO push_subscriptions (user_id, endpoint, keys_json, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET user_id = excluded.user_id, keys_json = excluded.keys_json`,
+      req.user.id, endpoint, JSON.stringify({ p256dh: keys.p256dh, auth: keys.auth }), iso());
+    return { ok: true };
+  }));
+
+  app.post('/api/push/unsubscribe', route(async (req) => {
+    await db.run('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint = ?', req.user.id, String(req.body?.endpoint || ''));
+    return { ok: true };
+  }));
+
+  app.post('/api/push/test', route(async (req) => {
+    if (!notify) fail(503, 'push_unavailable');
+    const delivered = await sendToUser(db, notify.send, req.user.id, testPayload(req.user.locale));
+    if (!delivered) fail(409, 'no_devices');
+    return { ok: true, delivered };
+  }));
+
+  app.get('/api/reminders', route(async (req) => {
+    const fam = await familyReminder(db, req.user.family_id, iso());
+    const mine = await memberReminder(db, req.user.id, iso());
+    const devices = (await db.get('SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?', req.user.id)).n;
+    return {
+      family: publicReminder(fam),
+      mine: {
+        enabled: Boolean(mine.enabled), useFamilyTime: Boolean(mine.use_family_time), time: mine.time_local || fam.time_local,
+        quietDays: mine.quiet_days, followup: Boolean(mine.followup_enabled), followupTime: mine.followup_time || fam.followup_time,
+        celebrate: Boolean(mine.celebrate),
+      },
+      effective: effective(fam, mine),
+      devices,
+      timezone: req.user.timezone,
+    };
+  }));
+
+  app.put('/api/reminders/me', route(async (req) => {
+    const b = req.body || {};
+    const cur = await memberReminder(db, req.user.id, iso());
+    const bool = (v, d) => (v === undefined ? d : v ? 1 : 0);
+    const time = b.time !== undefined ? (isTime(b.time) ? b.time : fail(400, 'bad_time')) : cur.time_local;
+    const followupTime = b.followupTime !== undefined ? (isTime(b.followupTime) ? b.followupTime : fail(400, 'bad_time')) : cur.followup_time;
+    const quiet = b.quietDays === undefined ? cur.quiet_days : b.quietDays === null ? null : isQuietDays(b.quietDays) ? b.quietDays : fail(400, 'bad_days');
+    await db.run(
+      `UPDATE member_reminders SET enabled = ?, use_family_time = ?, time_local = ?, quiet_days = ?, followup_enabled = ?, followup_time = ?,
+         celebrate = ?, updated_at = ? WHERE user_id = ?`,
+      bool(b.enabled, cur.enabled), bool(b.useFamilyTime, cur.use_family_time), time, quiet, bool(b.followup, cur.followup_enabled),
+      followupTime, bool(b.celebrate, cur.celebrate), iso(), req.user.id);
+    return { ok: true };
+  }));
+
   // ---------- administrator ----------
+  app.put('/api/admin/reminders', requireAdmin, route(async (req) => {
+    const b = req.body || {};
+    const cur = await familyReminder(db, req.user.family_id, iso());
+    const time = b.time !== undefined ? (isTime(b.time) ? b.time : fail(400, 'bad_time')) : cur.time_local;
+    const followupTime = b.followupTime !== undefined ? (isTime(b.followupTime) ? b.followupTime : fail(400, 'bad_time')) : cur.followup_time;
+    const quiet = b.quietDays !== undefined ? (isQuietDays(b.quietDays) ? b.quietDays : fail(400, 'bad_days')) : cur.quiet_days;
+    const message = b.message !== undefined ? str(b.message, 140) : cur.message;
+    const enabled = b.enabled === undefined ? cur.enabled : b.enabled ? 1 : 0;
+    await db.run('UPDATE family_reminders SET enabled = ?, time_local = ?, message = ?, quiet_days = ?, followup_time = ?, updated_at = ? WHERE family_id = ?',
+      enabled, time, message, quiet, followupTime, iso(), req.user.family_id);
+    return { ok: true };
+  }));
+
+  app.get('/api/admin/wakeup', requireAdmin, route(async (req) => {
+    if (!notify) fail(503, 'push_unavailable');
+    const last = (await db.get("SELECT value FROM app_settings WHERE key = 'last_wakeup'"))?.value ?? null;
+    return { url: `${req.protocol}://${req.get('host')}/api/cron/tick?key=${notify.cronKey}`, lastWakeup: last };
+  }));
+
   app.get('/api/admin/members', requireAdmin, route(async (req) => {
     const [rows, f] = await Promise.all([
       db.all(

@@ -15,11 +15,13 @@ const { chromium, devices } = require('playwright');
 const QURAN = JSON.parse(readFileSync(new URL('../data/al-baqarah.json', import.meta.url), 'utf8'));
 
 let server, browser, base, dir;
+const pushedE2E = [];
 before(async () => {
   dir = mkdtempSync(path.join(tmpdir(), 'baqara-e2e-'));
   const dbFile = path.join(dir, 'e2e.db');
   execFileSync(process.execPath, ['scripts/seed-demo.js'], { env: { ...process.env, DATABASE_URL: `file:${dbFile}` }, stdio: 'ignore' });
-  const app = createApp({ db: await openDb(`file:${dbFile}`), serveClient: true });
+  const notify = { publicKey: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U', cronKey: 'e2e-key', send: async (sub, payload) => { pushedE2E.push({ sub, payload }); return 'ok'; } };
+  const app = createApp({ db: await openDb(`file:${dbFile}`), serveClient: true, notify });
   await new Promise((r) => { server = app.listen(0, r); });
   base = `http://localhost:${server.address().port}`;
   browser = await chromium.launch();
@@ -168,7 +170,7 @@ test('administrator removes a member, invites a new one, and they join from the 
   await admin.waitForSelector('text=5 of 6 members');
   await admin.fill('input[placeholder="Their name"]', 'Khalid');
   await admin.click('text=Create invite link');
-  const link = await admin.inputValue('.linkbox input');
+  const link = await admin.inputValue('input[aria-label="Invite link"]');
   assert.match(link, /\/invite\/[\w-]{20,}$/);
 
   const newcomer = await phone();
@@ -332,4 +334,58 @@ test('page view fits every page on phone, tablet and desktop screens', async () 
     console.log(`  ${vp.width}x${vp.height}: smallest text ${worst.font}px (page ${worst.p})`);
     await ctx.close();
   }
+});
+
+test('notifications: turn on from Home, send a test, and the phone shows a pushed reminder', async () => {
+  const ctx = await browser.newContext({ ...devices['Pixel 7'], permissions: ['notifications'] });
+  // Headless browsers have no real push service: stand in for the browser's subscription object.
+  await ctx.addInitScript(() => {
+    const fake = { endpoint: 'https://push.example/device-1', toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'BPk', auth: 'aa' } }; }, unsubscribe: async () => true };
+    let subscribed = false;
+    // Headless Chromium always reports notifications as blocked; act as a phone where the person allowed them.
+    let perm = 'default';
+    Object.defineProperty(Notification, 'permission', { get: () => perm });
+    Notification.requestPermission = async () => { perm = 'granted'; return perm; };
+    PushManager.prototype.getSubscription = async function () { return subscribed ? fake : null; };
+    PushManager.prototype.subscribe = async function () { subscribed = true; return fake; };
+  });
+  const page = await ctx.newPage();
+  await signIn(page, 'maryam', '2468');
+  await page.waitForSelector('text=Turn on a gentle daily reminder?');
+  await page.click('.notif-banner button:has-text("Turn on notifications")');
+  await page.waitForSelector('.notif-banner', { state: 'detached' });
+  await page.click('nav >> text=Settings');
+  await page.waitForSelector('text=Notifications are on for this phone.');
+  pushedE2E.length = 0;
+  await page.click('button:has-text("Send a test")');
+  await page.waitForSelector('text=Test sent');
+  assert.equal(pushedE2E.length, 1);
+  assert.equal(pushedE2E[0].sub.endpoint, 'https://push.example/device-1');
+  assert.equal(pushedE2E[0].payload.title, 'Notifications are on');
+
+  // Deliver a real push message to the service worker and check what it would show.
+  // (Headless Chromium never displays notifications, so the worker's showNotification call is recorded instead.)
+  const sw = ctx.serviceWorkers().find((w) => w.url().startsWith(base)) || await ctx.waitForEvent('serviceworker');
+  await sw.evaluate(() => {
+    self.__shown = [];
+    self.registration.showNotification = async (title, opts) => { self.__shown.push({ title, body: opts.body, url: opts.data.url, tag: opts.tag }); };
+  });
+  const cdp = await ctx.newCDPSession(page);
+  await cdp.send('ServiceWorker.enable');
+  const regId = await new Promise((resolve) => {
+    cdp.on('ServiceWorker.workerRegistrationUpdated', (e) => { const r = e.registrations.find((x) => x.scopeURL.startsWith(base)); if (r) resolve(r.registrationId); });
+  });
+  await cdp.send('ServiceWorker.deliverPushMessage', { origin: base, registrationId: regId, data: JSON.stringify({ title: 'Family Quran reading', body: 'It is time for today’s family Quran reading.', url: '/read?part=2', tag: 'daily' }) });
+  let shown = [];
+  for (let i = 0; i < 30 && !shown.length; i++) { shown = await sw.evaluate(() => self.__shown); if (!shown.length) await page.waitForTimeout(200); }
+  assert.deepEqual(shown, [{ title: 'Family Quran reading', body: 'It is time for today’s family Quran reading.', url: '/read?part=2', tag: 'daily' }]);
+
+  // Reminder settings save.
+  await page.click('label:has-text("At my own time") input');
+  await page.fill('input[aria-label="At my own time"]', '06:45');
+  await page.waitForTimeout(500);
+  const r = await page.evaluate(() => fetch('/api/reminders').then((x) => x.json()));
+  assert.equal(r.mine.useFamilyTime, false);
+  assert.equal(r.mine.time, '06:45');
+  await ctx.close();
 });

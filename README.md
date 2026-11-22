@@ -19,10 +19,11 @@ Plan, architecture, flows, schema and sources: **[docs/PLAN.md](docs/PLAN.md)**
 * Other reading paces: at my own pace, whole Surah daily, N verses per day, or finish over N days.
 * Daily completion (with undo), streak, days read, verses read, full readings, and gentle wording for missed days.
 * Family dashboard: today's shared reading (48 pages, which parts are read), who has read today, each person's progress today, this week, the last 30 days, and shared totals. Encouraging messages, fixed member order, no leaderboard.
+* **Gentle reminders (web push):** a daily reminder at the family time or your own time (with the family's progress), quiet days, an optional evening follow-up only if your part isn't read yet, and one celebration when the family completes the Surah. Never sent after you've read, never more than twice a day, in English or Arabic. The administrator sets the family default; everyone can adjust their own. Works on Android (Chrome) and iPhone (added to the Home Screen, iOS 16.4+). On free hosting, a free wake-up service keeps reminders on time (see the guide).
 * English / Arabic (RTL) interface, accessible controls, phone/tablet/desktop layouts, installable as an app.
 * Download my data, delete my account.
 
-Coming next: reminders (web push), audio recitation, translations, reflections, and family goals. The database tables are already in place.
+Coming next: audio recitation, translations, reflections, and family goals. The database tables are already in place.
 
 ## Run it locally
 
@@ -66,8 +67,8 @@ docker run -p 3000:3000 -v baqarah-data:/data baqarah
 ## Tests
 
 ```bash
-npm test            # 47 API tests: auth, invitations, 6-member cap, permissions, isolation, progress, time zones, errors
-npm run build && npm run test:e2e   # 13 browser tests (Playwright/Chromium): exact Arabic text, autosave, completion, invites, RTL, dark mode, responsive
+npm test            # 58 API tests: auth, invitations, 6-member cap, permissions, isolation, progress, time zones, errors
+npm run build && npm run test:e2e   # 14 browser tests (Playwright/Chromium): exact Arabic text, autosave, completion, invites, RTL, dark mode, responsive
 npm run verify:quran  # checksum of the stored Quran text
 ```
 

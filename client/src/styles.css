@@ -319,3 +319,16 @@ html.reading-page, html.reading-page body { overflow: hidden; overscroll-behavio
 .page-bottom-mid .btn { min-height: 44px; }
 html.reading-page .verse-actions { bottom: calc(130px + env(safe-area-inset-bottom)); }
 .part-row.mine { background: color-mix(in srgb, var(--green-soft) 45%, transparent); border-radius: 12px; padding-inline: 8px; margin-inline: -8px; }
+
+/* ---------- notifications ---------- */
+.toggle { display: flex; align-items: center; gap: 12px; min-height: 44px; cursor: pointer; }
+.toggle > span { flex: 1; min-width: 0; }
+.time-input { width: auto !important; min-height: 44px; margin-inline-start: 34px; }
+.choice-extra.row .time-input { margin-inline-start: 0; }
+.toggle input[type='checkbox'], .toggle input[type='radio'] { width: 22px; height: 22px; accent-color: var(--green); flex: none; }
+.days { display: flex; flex-wrap: wrap; gap: 6px; }
+.days button { min-width: 48px; min-height: 40px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; font-size: 14px; }
+.days button[aria-pressed='true'] { background: var(--surface-2); border-color: var(--gold-ornament); text-decoration: line-through; color: var(--ink-soft); }
+.wakeup { background: var(--surface-2); border-radius: 14px; padding: 14px; margin-top: 18px; }
+.wakeup ol { padding-inline-start: 20px; margin: 0 0 10px; }
+.notif-banner { display: grid; gap: 10px; border-color: var(--gold-ornament); }

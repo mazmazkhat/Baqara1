@@ -5,6 +5,7 @@ import { useApp } from '../state.jsx';
 import { Avatar, Bar } from '../components/ui.jsx';
 import { CompleteButton, encouragement } from '../components/complete.jsx';
 import { TodayParts } from '../components/parts.jsx';
+import { NotificationBanner } from '../components/notifications.jsx';
 import { IBook } from '../icons.jsx';
 
 export default function Home() {
@@ -34,6 +35,8 @@ export default function Home() {
     <div className="shell">
       <h1>{t('greeting', { name: me.user.displayName })}</h1>
       <p className="sub">{t.dateFmt(s.today, { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+
+      <NotificationBanner />
 
       {parts ? <TodayParts data={parts} setData={setParts} />
         : partsErr ? <section className="card"><p className="muted">{t.err(partsErr.code)}</p><button className="btn" onClick={loadParts}>{t('retry')}</button></section>
