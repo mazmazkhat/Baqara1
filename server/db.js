@@ -87,6 +87,9 @@ export async function openDb(url = process.env.DATABASE_URL || 'file:var/baqara.
       'DROP TABLE reading_plans_old',
     ], 'write');
   }
+  const remCols = (await client.execute("SELECT name FROM pragma_table_info('family_reminders')")).rows.map((r) => r.name);
+  if (!remCols.includes('followup_enabled')) await client.execute('ALTER TABLE family_reminders ADD COLUMN followup_enabled INTEGER NOT NULL DEFAULT 0');
+  if (!remCols.includes('celebrate')) await client.execute('ALTER TABLE family_reminders ADD COLUMN celebrate INTEGER NOT NULL DEFAULT 1');
   // Fixed parts became a daily choice on Home: earlier fixed-part plans go back to "at my own pace".
   await client.execute("UPDATE reading_plans SET plan_type = 'free', page_from = NULL, page_to = NULL WHERE plan_type = 'pages'");
   return new Db(client);

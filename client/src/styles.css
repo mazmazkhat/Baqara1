@@ -332,3 +332,4 @@ html.reading-page .verse-actions { bottom: calc(130px + env(safe-area-inset-bott
 .wakeup { background: var(--surface-2); border-radius: 14px; padding: 14px; margin-top: 18px; }
 .wakeup ol { padding-inline-start: 20px; margin: 0 0 10px; }
 .notif-banner { display: grid; gap: 10px; border-color: var(--gold-ornament); }
+.this-phone { background: var(--surface-2); border-radius: 14px; padding: 12px 14px; }

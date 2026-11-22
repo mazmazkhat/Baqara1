@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Routes, Route, NavLink, Navigate, Link, useLocation } from 'react-router-dom';
 import { useApp } from './state.jsx';
+import { refreshPushSubscription } from './push.js';
 import { IHome, IBook, IFamily, ICal, ICog } from './icons.jsx';
 import { Loading, ErrorState } from './components/ui.jsx';
 import { Login, Setup, Invite } from './pages/Auth.jsx';
@@ -14,6 +15,8 @@ function Shell({ children }) {
   const { t, me } = useApp();
   const { pathname } = useLocation();
   useEffect(() => { if (pathname !== '/read') window.scrollTo(0, 0); }, [pathname]);
+  // Keep this phone's notifications linked to whoever is signed in on it.
+  useEffect(() => { refreshPushSubscription(); }, [me.user.id]);
   const tabs = [
     ['/', IHome, t('nav_home')],
     ['/read', IBook, t('nav_read')],

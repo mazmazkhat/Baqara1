@@ -3,7 +3,7 @@ import { api } from '../api.js';
 import { useApp } from '../state.jsx';
 import { Avatar, ErrorMsg, PinInput } from '../components/ui.jsx';
 import { IShare } from '../icons.jsx';
-import { DeviceNotifications, MyReminders, FamilyReminders } from '../components/notifications.jsx';
+import { FamilyReminders } from '../components/notifications.jsx';
 
 const COLORS = ['green', 'navy', 'gold', 'teal', 'rose', 'plum'];
 const EMOJIS = ['', '🌙', '⭐', '🌿', '🌸', '🕊️', '🌳', '☀️', '💧', '📖', '🌷', '🍃'];
@@ -290,10 +290,6 @@ export default function Settings() {
   return (
     <div className="shell">
       <h1>{t('nav_settings')}</h1>
-      <Section title={t('notif_title')}>
-        <DeviceNotifications />
-        <MyReminders />
-      </Section>
       {me.user.role === 'admin' && <Admin />}
       <Profile />
       <Plan />

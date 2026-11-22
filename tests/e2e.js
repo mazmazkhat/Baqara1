@@ -354,11 +354,13 @@ test('notifications: turn on from Home, send a test, and the phone shows a pushe
   await page.waitForSelector('text=Turn on a gentle daily reminder?');
   await page.click('.notif-banner button:has-text("Turn on notifications")');
   await page.waitForSelector('.notif-banner', { state: 'detached' });
+  // Members have no reminder settings: the administrator decides for the family.
   await page.click('nav >> text=Settings');
-  await page.waitForSelector('text=Notifications are on for this phone.');
+  await page.waitForSelector('text=Reading pace');
+  assert.equal(await page.locator('text=Reminders & notifications').count(), 0);
   pushedE2E.length = 0;
-  await page.click('button:has-text("Send a test")');
-  await page.waitForSelector('text=Test sent');
+  const test = await page.evaluate(() => fetch('/api/push/test', { method: 'POST', headers: { 'X-Requested-With': 'baqara' } }).then((r) => r.status));
+  assert.equal(test, 200);
   assert.equal(pushedE2E.length, 1);
   assert.equal(pushedE2E[0].sub.endpoint, 'https://push.example/device-1');
   assert.equal(pushedE2E[0].payload.title, 'Notifications are on');
@@ -380,12 +382,20 @@ test('notifications: turn on from Home, send a test, and the phone shows a pushe
   for (let i = 0; i < 30 && !shown.length; i++) { shown = await sw.evaluate(() => self.__shown); if (!shown.length) await page.waitForTimeout(200); }
   assert.deepEqual(shown, [{ title: 'Family Quran reading', body: 'It is time for today’s family Quran reading.', url: '/read?part=2', tag: 'daily' }]);
 
-  // Reminder settings save.
-  await page.click('label:has-text("At my own time") input');
-  await page.fill('input[aria-label="At my own time"]', '06:45');
-  await page.waitForTimeout(500);
-  const r = await page.evaluate(() => fetch('/api/reminders').then((x) => x.json()));
-  assert.equal(r.mine.useFamilyTime, false);
-  assert.equal(r.mine.time, '06:45');
   await ctx.close();
+});
+
+test('administrator controls the family reminders in Settings', async () => {
+  const page = await phone();
+  await signIn(page, 'yusuf', '482915');
+  await page.click('nav >> text=Settings');
+  await page.waitForSelector('h3:has-text("Reminders & notifications")');
+  await page.waitForSelector('text=This phone');
+  await page.fill('.this-phone ~ label input[type=time]', '20:15');
+  await page.click('label:has-text("Gentle evening reminder") input');
+  await page.click('.days button:has-text("Fri")');
+  await page.waitForTimeout(600);
+  const r = await page.evaluate(() => fetch('/api/admin/reminders').then((x) => x.json()));
+  assert.deepEqual([r.time, r.followup, r.quietDays, r.celebrate], ['20:15', true, '5', true]);
+  await page.context().close();
 });

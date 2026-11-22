@@ -559,7 +559,7 @@ describe('upgrading an existing database', () => {
   });
 });
 
-describe('notifications (gentle reminders)', () => {
+describe('notifications (gentle reminders, set by the family administrator)', () => {
   let app, db, admin, maryam, ibrahim;
   const sub = (name) => ({ endpoint: `https://push.example/${name}`, keys: { p256dh: 'BPk', auth: 'aa' } });
   const tick = (key = 'wake-key-123') => request(app).get(`/api/cron/tick?key=${key}`);
@@ -581,13 +581,23 @@ describe('notifications (gentle reminders)', () => {
     assert.equal((await post(maryam, '/api/push/test', {})).body.delivered, 1);
     assert.equal(pushed[0].title, 'Notifications are on');
     assert.equal((await maryam.get('/api/push/key')).body.publicKey, 'test-public-key');
-    assert.equal((await maryam.get('/api/reminders')).body.devices, 1);
+    assert.equal((await admin.get('/api/admin/reminders')).body.membersWithNotifications, 2);
+  });
+
+  test('members have no reminder settings; only the administrator changes them', async () => {
+    assert.equal((await maryam.get('/api/reminders')).status, 404);
+    assert.equal((await put(maryam, '/api/reminders/me', { enabled: false })).status, 404);
+    assert.equal((await maryam.get('/api/admin/reminders')).status, 403);
+    assert.equal((await put(maryam, '/api/admin/reminders', { time: '20:00' })).status, 403);
+    assert.equal((await put(admin, '/api/admin/reminders', { time: '7pm' })).status, 400);
+    assert.equal((await put(admin, '/api/admin/reminders', { quietDays: '9' })).status, 400);
   });
 
   test('the wake-up link needs the secret key', async () => {
     assert.equal((await tick('wrong')).status, 403);
     assert.equal((await request(app).get('/api/cron/tick')).status, 403);
     assert.equal((await tick()).status, 200);
+    assert.match((await admin.get('/api/admin/wakeup')).body.url, /\/api\/cron\/tick\?key=wake-key-123$/);
   });
 
   test('daily reminder goes out at the family time in each person\'s own time zone, once', async () => {
@@ -617,21 +627,23 @@ describe('notifications (gentle reminders)', () => {
     assert.equal(sentTo('maryam').length, 0);
   });
 
-  test('personal time, quiet days and turning reminders off are respected', async () => {
+  test('family time, message, quiet days and switching reminders off apply to everyone', async () => {
     pushed.length = 0;
-    assert.equal((await put(ibrahim, '/api/reminders/me', { useFamilyTime: false, time: '25:00' })).status, 400);
-    await put(ibrahim, '/api/reminders/me', { useFamilyTime: false, time: '06:30', quietDays: '3' }); // Wednesday quiet
+    await put(admin, '/api/admin/reminders', { time: '06:30', message: 'Time for our Baqarah reading 🌿', quietDays: '3' }); // Wednesday quiet
     setClock('2026-12-16T03:40:00Z'); // Wed 06:40 Riyadh
     await tick();
     assert.equal(sentTo('ibrahim').length, 0, 'quiet day');
     setClock('2026-12-17T03:40:00Z'); // Thu 06:40 Riyadh
     await tick();
-    assert.equal(sentTo('ibrahim').length, 1, 'own time');
-    await put(ibrahim, '/api/reminders/me', { enabled: false });
+    assert.equal(sentTo('ibrahim').length, 1, 'new family time');
+    assert.match(sentTo('ibrahim')[0].body, /^Time for our Baqarah reading 🌿/);
+    await put(admin, '/api/admin/reminders', { enabled: false });
     setClock('2026-12-18T03:40:00Z');
     await tick();
-    assert.equal(sentTo('ibrahim').length, 1, 'turned off');
-    await put(ibrahim, '/api/reminders/me', { enabled: true, useFamilyTime: true, quietDays: null });
+    assert.equal(sentTo('ibrahim').length, 1, 'switched off');
+    await put(admin, '/api/admin/reminders', { enabled: true, time: '19:00', message: '', quietDays: '' });
+    const r = (await admin.get('/api/admin/reminders')).body;
+    assert.deepEqual([r.enabled, r.time, r.quietDays, r.followup, r.celebrate], [true, '19:00', '', false, true]);
   });
 
   test('a reminder is not sent more than 4 hours late (e.g. if the server was asleep)', async () => {
@@ -641,9 +653,9 @@ describe('notifications (gentle reminders)', () => {
     assert.equal(sentTo('ibrahim').length, 0);
   });
 
-  test('optional evening follow-up only when my part is taken but not read', async () => {
+  test('optional evening follow-up (family setting) only when a taken part is unread', async () => {
     pushed.length = 0;
-    await put(maryam, '/api/reminders/me', { followup: true, followupTime: '21:30' });
+    await put(admin, '/api/admin/reminders', { followup: true, followupTime: '21:30' });
     setClock('2026-12-20T10:00:00Z');
     await post(maryam, '/api/parts/4/claim', {});
     setClock('2026-12-20T19:00:00Z');
@@ -655,39 +667,40 @@ describe('notifications (gentle reminders)', () => {
     assert.deepEqual(m.map((x) => x.tag), ['daily', 'followup']);
     assert.match(m[1].body, /Part 4/);
     assert.equal(m[1].url, '/read?part=4');
+    assert.equal(sentTo('ibrahim').filter((x) => x.tag === 'followup').length, 0, 'no part taken, no follow-up');
+    await put(admin, '/api/admin/reminders', { followup: false });
   });
 
-  test('celebration when the whole Surah is completed, once, for those who want it', async () => {
+  test('celebration when the whole Surah is completed, once a day; the administrator can switch it off', async () => {
     pushed.length = 0;
     setClock('2026-12-21T10:00:00Z');
-    await put(ibrahim, '/api/reminders/me', { celebrate: false });
     for (const n of [1, 2, 3, 4, 5]) { await post(admin, `/api/parts/${n}/claim`, {}); await post(admin, `/api/parts/${n}/done`, {}); }
     assert.equal(pushed.length, 0);
     await post(maryam, '/api/parts/6/claim', {});
     await post(maryam, '/api/parts/6/done', {});
     assert.equal(sentTo('maryam').filter((x) => x.tag === 'whole').length, 1);
-    assert.equal(sentTo('ibrahim').length, 0, 'opted out');
+    assert.equal(sentTo('ibrahim').filter((x) => x.tag === 'whole').length, 1);
     await del(maryam, '/api/parts/6/done');
     await post(maryam, '/api/parts/6/done', {});
     assert.equal(sentTo('maryam').filter((x) => x.tag === 'whole').length, 1, 'only once a day');
+    pushed.length = 0;
+    await put(admin, '/api/admin/reminders', { celebrate: false });
+    setClock('2026-12-22T10:00:00Z');
+    for (const n of [1, 2, 3, 4, 5, 6]) { await post(admin, `/api/parts/${n}/claim`, {}); await post(admin, `/api/parts/${n}/done`, {}); }
+    assert.equal(pushed.filter((x) => x.tag === 'whole').length, 0, 'switched off');
+    await put(admin, '/api/admin/reminders', { celebrate: true });
   });
 
   test('Arabic speakers get Arabic reminders', async () => {
     pushed.length = 0;
     await patch(ibrahim, '/api/me', { locale: 'ar' });
-    setClock('2026-12-22T16:10:00Z'); // 19:10 Riyadh
+    setClock('2026-12-23T16:10:00Z'); // 19:10 Riyadh
     await tick();
     assert.match(sentTo('ibrahim')[0].body, /حان وقت قراءة العائلة اليومية/);
     assert.match(sentTo('ibrahim')[0].body, /من ٦ أجزاء/);
   });
 
-  test('family defaults are admin-only and validated; expired devices are forgotten', async () => {
-    assert.equal((await put(maryam, '/api/admin/reminders', { time: '20:00' })).status, 403);
-    assert.equal((await put(admin, '/api/admin/reminders', { time: '7pm' })).status, 400);
-    assert.equal((await put(admin, '/api/admin/reminders', { time: '20:15', message: 'Time for our Baqarah reading 🌿', quietDays: '5' })).status, 200);
-    const r = (await maryam.get('/api/reminders')).body;
-    assert.deepEqual([r.family.time, r.family.message, r.family.quietDays], ['20:15', 'Time for our Baqarah reading 🌿', '5']);
-    assert.match((await admin.get('/api/admin/wakeup')).body.url, /\/api\/cron\/tick\?key=wake-key-123$/);
+  test('expired devices are forgotten', async () => {
     await post(maryam, '/api/push/subscribe', sub('gone-phone'));
     await post(maryam, '/api/push/test', {});
     assert.equal((await db.get("SELECT COUNT(*) AS n FROM push_subscriptions WHERE endpoint LIKE '%gone%'")).n, 0);

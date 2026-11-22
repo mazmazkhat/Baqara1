@@ -54,11 +54,13 @@ Free hosting sleeps when nobody is using the app, and a sleeping app can't send 
 
 Keep that link private: it only checks for due reminders, but there is no need to share it.
 
-Each family member then turns notifications on for their own phone:
-* **Android:** open the app in Chrome, then **Settings** → **Turn on notifications** → **Allow**.
-* **iPhone:** first add the app to the Home Screen (Safari → Share ⬆️ → **Add to Home Screen**; iOS 16.4 or newer). Open it from the new icon, then **Settings** → **Turn on notifications** → **Allow**.
+Reminder settings (time, message, quiet days, evening follow-up, celebration) are chosen by the administrator in **Settings** → **Family administration** → **Reminders & notifications**, and apply to everyone. Members have no reminder settings.
 
-Tap **Send a test** to check it works.
+Each family member allows notifications on their own phone once, from the prompt on **Home** (**Turn on notifications** → **Allow**):
+* **Android:** open the app in Chrome.
+* **iPhone:** first add the app to the Home Screen (Safari → Share ⬆️ → **Add to Home Screen**; iOS 16.4 or newer), then open it from the new icon.
+
+If someone taps **Not now**, the prompt comes back a week later. The administrator can tap **Send a test** under **This phone**.
 
 ## Looking after it
 

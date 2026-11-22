@@ -125,6 +125,8 @@ CREATE TABLE IF NOT EXISTS family_reminders (
   message        TEXT NOT NULL DEFAULT '',            -- '' = the standard gentle message
   quiet_days     TEXT NOT NULL DEFAULT '',            -- e.g. '5' (0 = Sunday ... 6 = Saturday)
   followup_time  TEXT NOT NULL DEFAULT '21:30',
+  followup_enabled INTEGER NOT NULL DEFAULT 0,       -- gentle evening reminder for anyone whose part is unread
+  celebrate      INTEGER NOT NULL DEFAULT 1,         -- notify everyone when the family completes the Surah
   updated_at     TEXT NOT NULL
 );
 

@@ -107,24 +107,15 @@ export async function familyReminder(db, familyId, nowIso) {
   return r;
 }
 
-export async function memberReminder(db, userId, nowIso) {
-  let r = await db.get('SELECT * FROM member_reminders WHERE user_id = ?', userId);
-  if (!r) {
-    await db.run('INSERT OR IGNORE INTO member_reminders (user_id, updated_at) VALUES (?, ?)', userId, nowIso);
-    r = await db.get('SELECT * FROM member_reminders WHERE user_id = ?', userId);
-  }
-  return r;
-}
-
-/** The settings that actually apply to a person (their own choices over the family's defaults). */
-export function effective(fam, mem) {
+/** Reminder settings are chosen by the family administrator and apply to everyone. */
+export function effective(fam) {
   return {
-    enabled: Boolean(fam.enabled && mem.enabled),
-    time: mem.use_family_time || !mem.time_local ? fam.time_local : mem.time_local,
-    quietDays: (mem.quiet_days ?? fam.quiet_days).split(',').filter(Boolean).map(Number),
-    followup: Boolean(mem.followup_enabled),
-    followupTime: mem.followup_time || fam.followup_time,
-    celebrate: Boolean(mem.celebrate),
+    enabled: Boolean(fam.enabled),
+    time: fam.time_local,
+    quietDays: fam.quiet_days.split(',').filter(Boolean).map(Number),
+    followup: Boolean(fam.followup_enabled),
+    followupTime: fam.followup_time,
+    celebrate: Boolean(fam.celebrate),
     message: fam.message,
   };
 }
@@ -165,7 +156,7 @@ export async function runReminders(db, send, now) {
       famCache.set(u.family_id, { family, fDate, rem: await familyReminder(db, u.family_id, nowIso), parts: await partsForDay(db, u.family_id, fDate), ranges: await rangesForDay(db, u.family_id, fDate) });
     }
     const f = famCache.get(u.family_id);
-    const s = effective(f.rem, await memberReminder(db, u.id, nowIso));
+    const s = effective(f.rem);
     if (!s.enabled) continue;
     const clock = localClock(u.timezone, now);
     if (s.quietDays.includes(clock.weekday)) continue;
@@ -199,13 +190,12 @@ export async function celebrateIfComplete(db, send, familyId, fDate, now) {
   if (!coverage(ranges).wholeSurah) return 0;
   const nowIso = now.toISOString();
   const fam = await familyReminder(db, familyId, nowIso);
+  if (!effective(fam).celebrate) return 0;
   const members = await db.all(
     `SELECT u.id, u.locale FROM users u JOIN family_memberships m ON m.user_id = u.id
       WHERE m.family_id = ? AND m.status = 'active' AND EXISTS (SELECT 1 FROM push_subscriptions s WHERE s.user_id = u.id)`, familyId);
   let n = 0;
   for (const u of members) {
-    const s = effective(fam, await memberReminder(db, u.id, nowIso));
-    if (!s.celebrate) continue;
     if (!(await logOnce(db, u.id, 'whole', fDate, nowIso))) continue;
     const T = text(u.locale);
     await sendToUser(db, send, u.id, { title: T.wholeTitle, body: T.wholeBody, url: '/family', tag: 'whole' });

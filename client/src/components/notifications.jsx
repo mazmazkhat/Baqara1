@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api.js';
 import { useApp } from '../state.jsx';
 import { ErrorMsg } from './ui.jsx';
-import { pushStatus, turnOnPush, turnOffPush, refreshPushSubscription } from '../push.js';
+import { pushStatus, turnOnPush, turnOffPush } from '../push.js';
 
 const BANNER_KEY = 'bf_notif_banner_dismissed';
 const readPref = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -68,52 +68,6 @@ export function DeviceNotifications({ onChange }) {
   );
 }
 
-/** My own reminder choices. */
-export function MyReminders() {
-  const { t, showToast } = useApp();
-  const [r, setR] = useState(null);
-  const [error, setError] = useState(null);
-  const load = () => api('/reminders').then(setR).catch(setError);
-  useEffect(() => { load(); refreshPushSubscription(); }, []);
-
-  async function save(patch) {
-    setR((x) => ({ ...x, mine: { ...x.mine, ...patch } }));
-    try { await api('/reminders/me', { method: 'PUT', body: patch }); showToast(t('saved')); } catch (e) { showToast(t.err(e.code)); load(); }
-  }
-
-  if (error) return <ErrorMsg error={error} />;
-  if (!r) return <div className="skeleton" style={{ height: 120 }} />;
-  const m = r.mine;
-  return (
-    <div className="stack" style={{ marginTop: 16 }}>
-      <h3>{t('my_reminder')}</h3>
-      <label className="toggle"><input type="checkbox" checked={m.enabled} onChange={(e) => save({ enabled: e.target.checked })} /><span>{t('rem_enabled')}</span></label>
-      {m.enabled && (
-        <>
-          <div className="choice-extra" style={{ margin: 0 }}>
-            <label className="toggle"><input type="radio" name="remtime" checked={m.useFamilyTime} onChange={() => save({ useFamilyTime: true })} /><span>{t('rem_family_time', { time: r.family.time })}</span></label>
-            <label className="toggle"><input type="radio" name="remtime" checked={!m.useFamilyTime} onChange={() => save({ useFamilyTime: false, time: m.time })} /><span>{t('rem_own_time')}</span></label>
-            {!m.useFamilyTime && <input type="time" className="time-input" value={m.time} onChange={(e) => e.target.value && save({ time: e.target.value })} aria-label={t('rem_own_time')} />}
-          </div>
-          <div>
-            <p className="small" style={{ margin: '0 0 6px', fontWeight: 600 }}>{t('rem_quiet')}</p>
-            <DaysPicker value={m.quietDays ?? r.family.quietDays} onChange={(v) => save({ quietDays: v })} t={t} label={t('rem_quiet')} />
-          </div>
-          <label className="toggle"><input type="checkbox" checked={m.followup} onChange={(e) => save({ followup: e.target.checked })} /><span>{t('rem_followup')}</span></label>
-          {m.followup && (
-            <div className="choice-extra row" style={{ margin: 0 }}>
-              <span className="small">{t('rem_followup_at')}</span>
-              <input type="time" className="time-input" value={m.followupTime} onChange={(e) => e.target.value && save({ followupTime: e.target.value })} aria-label={t('rem_followup')} />
-            </div>
-          )}
-        </>
-      )}
-      <label className="toggle"><input type="checkbox" checked={m.celebrate} onChange={(e) => save({ celebrate: e.target.checked })} /><span>{t('rem_celebrate')}</span></label>
-      <p className="muted small" style={{ margin: 0 }}>{t('rem_note', { tz: r.timezone.replaceAll('_', ' ') })}</p>
-    </div>
-  );
-}
-
 /** Administrator: the family's default reminder and the wake-up link for free hosting. */
 export function FamilyReminders() {
   const { t, showToast } = useApp();
@@ -122,7 +76,7 @@ export function FamilyReminders() {
   const [wake, setWake] = useState(null);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
-    api('/reminders').then((x) => { setR(x.family); setMsg(x.family.message); }).catch(() => {});
+    api('/admin/reminders').then((x) => { setR(x); setMsg(x.message); }).catch(() => {});
     api('/admin/wakeup').then(setWake).catch(() => {});
   }, []);
   async function save(patch) {
@@ -133,11 +87,21 @@ export function FamilyReminders() {
   return (
     <div className="stack">
       <h3 style={{ marginTop: 22 }}>{t('fam_reminder')}</h3>
-      <label className="toggle"><input type="checkbox" checked={r.enabled} onChange={(e) => save({ enabled: e.target.checked })} /><span>{t('fam_rem_enabled')}</span></label>
-      <div className="grid2">
-        <label className="field" style={{ margin: 0 }}><span>{t('fam_rem_time')}</span><input type="time" value={r.time} onChange={(e) => e.target.value && save({ time: e.target.value })} /></label>
-        <label className="field" style={{ margin: 0 }}><span>{t('fam_rem_followup')}</span><input type="time" value={r.followupTime} onChange={(e) => e.target.value && save({ followupTime: e.target.value })} /></label>
+      <p className="muted small" style={{ margin: 0 }}>{t('fam_rem_note', { n: r.membersWithNotifications })}</p>
+      <div className="this-phone">
+        <p className="small" style={{ margin: '0 0 6px', fontWeight: 600 }}>{t('this_phone')}</p>
+        <DeviceNotifications />
       </div>
+      <label className="toggle"><input type="checkbox" checked={r.enabled} onChange={(e) => save({ enabled: e.target.checked })} /><span>{t('fam_rem_enabled')}</span></label>
+      <label className="field" style={{ margin: 0 }}><span>{t('fam_rem_time')}</span><input type="time" className="time-input" style={{ marginInlineStart: 0 }} value={r.time} onChange={(e) => e.target.value && save({ time: e.target.value })} /></label>
+      <label className="toggle"><input type="checkbox" checked={r.followup} onChange={(e) => save({ followup: e.target.checked })} /><span>{t('fam_rem_followup_on')}</span></label>
+      {r.followup && (
+        <div className="choice-extra row" style={{ margin: 0 }}>
+          <span className="small">{t('rem_followup_at')}</span>
+          <input type="time" className="time-input" value={r.followupTime} onChange={(e) => e.target.value && save({ followupTime: e.target.value })} aria-label={t('fam_rem_followup')} />
+        </div>
+      )}
+      <label className="toggle"><input type="checkbox" checked={r.celebrate} onChange={(e) => save({ celebrate: e.target.checked })} /><span>{t('fam_rem_celebrate')}</span></label>
       <form className="row" onSubmit={(e) => { e.preventDefault(); save({ message: msg.trim() }); }}>
         <label className="field" style={{ flex: 1, margin: 0 }}><span>{t('fam_rem_message')}</span><input value={msg} maxLength={140} placeholder={t('fam_rem_message_ph')} onChange={(e) => setMsg(e.target.value)} /></label>
         <button className="btn" style={{ alignSelf: 'flex-end' }} disabled={msg.trim() === r.message}>{t('save')}</button>
@@ -173,11 +137,12 @@ export function NotificationBanner() {
   const { t, showToast } = useApp();
   const [show, setShow] = useState(false);
   useEffect(() => {
-    if (readPref(BANNER_KEY)) return;
+    const dismissedAt = Number(readPref(BANNER_KEY) || 0);
+    if (Date.now() - dismissedAt < 7 * 86400000) return; // "Not now" hides it for a week
     pushStatus().then((s) => setShow(s === 'off' || s === 'ios-install')).catch(() => {});
   }, []);
   if (!show) return null;
-  const dismiss = () => { writePref(BANNER_KEY, '1'); setShow(false); };
+  const dismiss = () => { writePref(BANNER_KEY, String(Date.now())); setShow(false); };
   return (
     <section className="card notif-banner" aria-live="polite">
       <b>🔔 {t('notif_banner')}</b>

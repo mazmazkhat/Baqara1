@@ -16,7 +16,7 @@ import { QURAN, partByNumber } from './quran.js';
 import { familyDate, partsForDay, rangesForDay, wholeSurahDates, syncPartCompletion, yesterday } from './parts.js';
 import { timingSafeEqual } from 'node:crypto';
 import {
-  runReminders, celebrateIfComplete, sendToUser, testPayload, familyReminder, memberReminder, effective, isTime, isQuietDays,
+  runReminders, celebrateIfComplete, sendToUser, testPayload, familyReminder, isTime, isQuietDays,
 } from './notify.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -546,7 +546,10 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
   }));
 
   // ---------- notifications ----------
-  const publicReminder = (r) => ({ enabled: Boolean(r.enabled), time: r.time_local, message: r.message, quietDays: r.quiet_days, followupTime: r.followup_time });
+  const publicReminder = (r) => ({
+    enabled: Boolean(r.enabled), time: r.time_local, message: r.message, quietDays: r.quiet_days,
+    followup: Boolean(r.followup_enabled), followupTime: r.followup_time, celebrate: Boolean(r.celebrate),
+  });
 
   app.get('/api/push/key', route(() => {
     if (!notify) fail(503, 'push_unavailable');
@@ -577,38 +580,6 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     return { ok: true, delivered };
   }));
 
-  app.get('/api/reminders', route(async (req) => {
-    const fam = await familyReminder(db, req.user.family_id, iso());
-    const mine = await memberReminder(db, req.user.id, iso());
-    const devices = (await db.get('SELECT COUNT(*) AS n FROM push_subscriptions WHERE user_id = ?', req.user.id)).n;
-    return {
-      family: publicReminder(fam),
-      mine: {
-        enabled: Boolean(mine.enabled), useFamilyTime: Boolean(mine.use_family_time), time: mine.time_local || fam.time_local,
-        quietDays: mine.quiet_days, followup: Boolean(mine.followup_enabled), followupTime: mine.followup_time || fam.followup_time,
-        celebrate: Boolean(mine.celebrate),
-      },
-      effective: effective(fam, mine),
-      devices,
-      timezone: req.user.timezone,
-    };
-  }));
-
-  app.put('/api/reminders/me', route(async (req) => {
-    const b = req.body || {};
-    const cur = await memberReminder(db, req.user.id, iso());
-    const bool = (v, d) => (v === undefined ? d : v ? 1 : 0);
-    const time = b.time !== undefined ? (isTime(b.time) ? b.time : fail(400, 'bad_time')) : cur.time_local;
-    const followupTime = b.followupTime !== undefined ? (isTime(b.followupTime) ? b.followupTime : fail(400, 'bad_time')) : cur.followup_time;
-    const quiet = b.quietDays === undefined ? cur.quiet_days : b.quietDays === null ? null : isQuietDays(b.quietDays) ? b.quietDays : fail(400, 'bad_days');
-    await db.run(
-      `UPDATE member_reminders SET enabled = ?, use_family_time = ?, time_local = ?, quiet_days = ?, followup_enabled = ?, followup_time = ?,
-         celebrate = ?, updated_at = ? WHERE user_id = ?`,
-      bool(b.enabled, cur.enabled), bool(b.useFamilyTime, cur.use_family_time), time, quiet, bool(b.followup, cur.followup_enabled),
-      followupTime, bool(b.celebrate, cur.celebrate), iso(), req.user.id);
-    return { ok: true };
-  }));
-
   // ---------- administrator ----------
   app.put('/api/admin/reminders', requireAdmin, route(async (req) => {
     const b = req.body || {};
@@ -617,10 +588,19 @@ export function createApp({ db, now = () => new Date(), setupCode = null, secure
     const followupTime = b.followupTime !== undefined ? (isTime(b.followupTime) ? b.followupTime : fail(400, 'bad_time')) : cur.followup_time;
     const quiet = b.quietDays !== undefined ? (isQuietDays(b.quietDays) ? b.quietDays : fail(400, 'bad_days')) : cur.quiet_days;
     const message = b.message !== undefined ? str(b.message, 140) : cur.message;
-    const enabled = b.enabled === undefined ? cur.enabled : b.enabled ? 1 : 0;
-    await db.run('UPDATE family_reminders SET enabled = ?, time_local = ?, message = ?, quiet_days = ?, followup_time = ?, updated_at = ? WHERE family_id = ?',
-      enabled, time, message, quiet, followupTime, iso(), req.user.family_id);
+    const bool = (v, d) => (v === undefined ? d : v ? 1 : 0);
+    await db.run(
+      `UPDATE family_reminders SET enabled = ?, time_local = ?, message = ?, quiet_days = ?, followup_enabled = ?, followup_time = ?, celebrate = ?,
+         updated_at = ? WHERE family_id = ?`,
+      bool(b.enabled, cur.enabled), time, message, quiet, bool(b.followup, cur.followup_enabled), followupTime, bool(b.celebrate, cur.celebrate),
+      iso(), req.user.family_id);
     return { ok: true };
+  }));
+
+  app.get('/api/admin/reminders', requireAdmin, route(async (req) => {
+    const devices = (await db.get(
+      'SELECT COUNT(DISTINCT s.user_id) AS n FROM push_subscriptions s JOIN family_memberships m ON m.user_id = s.user_id WHERE m.family_id = ?', req.user.family_id)).n;
+    return { ...publicReminder(await familyReminder(db, req.user.family_id, iso())), membersWithNotifications: devices };
   }));
 
   app.get('/api/admin/wakeup', requireAdmin, route(async (req) => {
